@@ -85,6 +85,7 @@ def test_build_harness_overrides_matches_harness_overrides_model():
         tools="web_search,web_fetch",
         skills="s1",
         runtime="codex",
+        mcp_toolset_id="mcp-ts-1",
         registry_space_id="space-1",
         registry_top_k=5,
         registry_endpoint="https://open.volcengineapi.com/",
@@ -97,6 +98,7 @@ def test_build_harness_overrides_matches_harness_overrides_model():
         "tools": "web_search,web_fetch",
         "skills": "s1",
         "runtime": "codex",
+        "mcp_toolset_id": "mcp-ts-1",
         "registry_space_id": "space-1",
         "registry_top_k": 5,
         "registry_endpoint": "https://open.volcengineapi.com/",
@@ -177,7 +179,7 @@ def test_harness_invoke_posts_registry_overrides(tmp_path, monkeypatch):
     captured = {}
     _patch_post(monkeypatch, captured)
 
-    result = _run_harness(
+    result = _run_invoke(
         [
             "first",
             "Find a finance expert.",
@@ -228,6 +230,29 @@ def test_harness_invoke_registry_uri_override(tmp_path, monkeypatch):
         "registry_top_k": 4,
         "registry_region": "cn-beijing",
     }
+
+
+def test_harness_invoke_posts_mcp_toolset_override(tmp_path, monkeypatch):
+    _write_registry(
+        tmp_path,
+        {"first": {"url": "https://x", "key": "ak", "runtime_id": "r-1"}},
+    )
+    captured = {}
+    _patch_post(monkeypatch, captured)
+
+    result = _run_invoke(
+        [
+            "first",
+            "Use MCP tools.",
+            "--directory",
+            str(tmp_path),
+            "--mcp-toolset-id",
+            "mcp-ts-test",
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["json"]["harness"] == {"mcp_toolset_id": "mcp-ts-test"}
 
 
 def test_harness_invoke_registry_space_name_resolves_to_space_id(tmp_path, monkeypatch):
@@ -693,6 +718,8 @@ def test_harness_run_sse_sends_overrides(tmp_path, monkeypatch):
             "Reply PINEAPPLE.",
             "--tools",
             "web_search",
+            "--mcp-toolset-id",
+            "mcp-ts-test",
         ]
     )
     assert result.exit_code == 0, result.output
@@ -701,6 +728,7 @@ def test_harness_run_sse_sends_overrides(tmp_path, monkeypatch):
     assert run_call["json"]["harness"] == {
         "system_prompt": "Reply PINEAPPLE.",
         "tools": "web_search",
+        "mcp_toolset_id": "mcp-ts-test",
     }
 
 

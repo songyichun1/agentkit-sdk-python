@@ -609,6 +609,7 @@ def build_harness_overrides(
     tools: Optional[str],
     skills: Optional[str],
     runtime: Optional[str],
+    mcp_toolset_id: Optional[str] = None,
     registry_space_id: Optional[str] = None,
     registry_top_k: Optional[int] = None,
     registry_endpoint: Optional[str] = None,
@@ -618,9 +619,9 @@ def build_harness_overrides(
 
     Field names/shapes match AgentKit's ``HarnessOverrides`` model:
     ``model_name`` (string), ``tools`` / ``skills`` as comma-separated strings,
-    ``system_prompt``, ``runtime``, and optional registry overrides. Only the
-    keys present here are applied server-side (``model_fields_set``); unset
-    fields keep the deployed harness's values.
+    ``system_prompt``, ``runtime``, optional MCP Toolset binding, and optional
+    registry overrides. Only the keys present here are applied server-side
+    (``model_fields_set``); unset fields keep the deployed harness's values.
     """
     overrides: dict[str, Any] = {}
     if system_prompt is not None:
@@ -633,6 +634,8 @@ def build_harness_overrides(
         overrides["skills"] = skills
     if runtime is not None:
         overrides["runtime"] = runtime
+    if mcp_toolset_id is not None:
+        overrides["mcp_toolset_id"] = mcp_toolset_id
     if registry_space_id is not None:
         overrides["registry_space_id"] = registry_space_id
     if registry_top_k is not None:
@@ -983,6 +986,11 @@ def harness_command(
     runtime: str = typer.Option(
         None, "--runtime", help="Override the harness runtime backend for this call."
     ),
+    mcp_toolset_id: str = typer.Option(
+        None,
+        "--mcp-toolset-id",
+        help="Override the AgentKit MCP Toolset binding for this invocation.",
+    ),
     registry_space_id: str = typer.Option(
         None,
         "--registry-space-id",
@@ -1140,11 +1148,12 @@ def harness_command(
             prompt=message,
             session_id=session_id,
             overrides=build_harness_overrides(
-                system_prompt,
-                model_name,
-                tools,
-                skills,
-                runtime,
+                system_prompt=system_prompt,
+                model_name=model_name,
+                tools=tools,
+                skills=skills,
+                runtime=runtime,
+                mcp_toolset_id=mcp_toolset_id,
                 registry_space_id=registry_overrides.get("registry_space_id"),
                 registry_top_k=registry_overrides.get("registry_top_k"),
                 registry_endpoint=registry_overrides.get("registry_endpoint"),
@@ -1171,15 +1180,16 @@ def harness_command(
         "run_agent_request": run_agent_request,
     }
     overrides = build_harness_overrides(
-        system_prompt,
-        model_name,
-        tools,
-        skills,
-        runtime,
-        registry_overrides.get("registry_space_id"),
-        registry_overrides.get("registry_top_k"),
-        registry_overrides.get("registry_endpoint"),
-        registry_overrides.get("registry_region"),
+        system_prompt=system_prompt,
+        model_name=model_name,
+        tools=tools,
+        skills=skills,
+        runtime=runtime,
+        mcp_toolset_id=mcp_toolset_id,
+        registry_space_id=registry_overrides.get("registry_space_id"),
+        registry_top_k=registry_overrides.get("registry_top_k"),
+        registry_endpoint=registry_overrides.get("registry_endpoint"),
+        registry_region=registry_overrides.get("registry_region"),
     )
     if overrides:
         body["harness"] = overrides
