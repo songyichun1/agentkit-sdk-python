@@ -375,10 +375,10 @@ def test_registry_config_maps_to_runtime_env():
     assert env["REGISTRY_REGION"] == "cn-beijing"
     assert env["STRUCTURED_TOOL_CALLS"] == "true"
     assert env["INCLUDE_TOOLS_EVERY_TURN"] == "true"
-    assert "MCP_TOOLSET_ID" not in env
+    assert env["MCP_TOOLSET_ID"] == "mcp-ts-test"
 
 
-def test_mcp_toolset_id_maps_to_runtime_binding_not_env():
+def test_mcp_toolset_id_maps_to_runtime_binding():
     cfg = build_agentkit_config(
         "h",
         "cn-beijing",

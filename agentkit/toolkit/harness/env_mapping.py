@@ -56,7 +56,7 @@ COMPONENT_TYPE_ENV: Dict[str, str] = {
 
 # Spec fields consumed by the deploy wrapper/platform rather than the harness
 # container. They must not be flattened into runtime environment variables.
-DEPLOY_ONLY_FIELDS = frozenset({"auth", "mcp_toolset_id"})
+DEPLOY_ONLY_FIELDS = frozenset({"auth"})
 
 # Backend ``type`` -> {harness connection param: VeADK env var}. Mirrors the
 # pydantic-settings env prefixes in ``veadk.configs.database_configs``;
