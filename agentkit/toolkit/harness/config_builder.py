@@ -23,6 +23,7 @@ def build_agentkit_config(
     envs: Dict[str, str],
     auth: Optional[Dict[str, Any]] = None,
     runtime_id: str = "Auto",
+    mcp_toolset_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the cloud AgentKit launch config dict (auto-provision).
 
@@ -64,6 +65,8 @@ def build_agentkit_config(
         cloud["runtime_apikey_name"] = "Auto"
         cloud["runtime_apikey"] = "Auto"
         cloud["runtime_jwt_allowed_clients"] = []
+    if mcp_toolset_id and str(mcp_toolset_id).strip():
+        cloud["runtime_bindings"] = {"mcp_toolset_id": str(mcp_toolset_id).strip()}
     return {
         "common": {
             "agent_name": runtime_name,

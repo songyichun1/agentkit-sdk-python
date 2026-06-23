@@ -262,6 +262,7 @@ def deploy_harness(
     runtime_envs = to_runtime_env(spec)
     runtime_name = name
     auth = _resolve_auth(spec.get("auth"), discovery_url, allowed_id)
+    mcp_toolset_id = spec.get("mcp_toolset_id")
 
     # AgentKit authenticates via the Volcengine SDK, which reads VOLC_ACCESSKEY /
     # VOLC_SECRETKEY from the environment. Mirror whatever AK/SK was passed (or
@@ -328,6 +329,9 @@ def deploy_harness(
         runtime_envs,
         auth,
         runtime_id=update_runtime_id or "Auto",
+        mcp_toolset_id=str(mcp_toolset_id).strip()
+        if mcp_toolset_id is not None
+        else None,
     )
 
     # AgentKit's launch path exposes no hook for runtime tags, so tag the runtime

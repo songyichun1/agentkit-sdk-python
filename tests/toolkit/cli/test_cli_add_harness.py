@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 
 from agentkit.toolkit.cli.cli import app
 from agentkit.toolkit.cli import cli_add
+from agentkit.toolkit.harness.config_builder import build_agentkit_config
 from agentkit.toolkit.harness.env_mapping import to_runtime_env
 
 runner = CliRunner()
@@ -27,6 +28,10 @@ runner = CliRunner()
 
 def _run(args):
     return runner.invoke(app, ["add", *args])
+
+
+def _squash_output(value: str) -> str:
+    return " ".join(value.split())
 
 
 def test_creates_harness_json_with_layered_structure(tmp_path):
@@ -165,6 +170,24 @@ def test_registry_flags_write_agentkit_a2a_section(tmp_path):
     assert data["include_tools_every_turn"] is True
 
 
+def test_mcp_toolset_id_writes_top_level_binding_field(tmp_path):
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--mcp-toolset-id",
+            "mcp-ts-test",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads((tmp_path / "h.harness.json").read_text())
+    assert data["mcp_toolset_id"] == "mcp-ts-test"
+
+
 def test_registry_space_name_resolves_to_space_id(tmp_path, monkeypatch):
     captured = {}
 
@@ -296,7 +319,7 @@ def test_resolve_a2a_space_id_by_name_paginates_all_spaces(monkeypatch):
     ]
 
 
-def test_registry_disabled_turns_off_registry(tmp_path):
+def test_registry_disabled_is_pruned_from_harness_spec(tmp_path):
     result = _run(
         [
             "harness",
@@ -311,7 +334,7 @@ def test_registry_disabled_turns_off_registry(tmp_path):
 
     assert result.exit_code == 0, result.output
     data = json.loads((tmp_path / "h.harness.json").read_text())
-    assert data["registry"] == {"type": ""}
+    assert "registry" not in data
 
 
 def test_registry_off_is_not_supported(tmp_path):
@@ -342,6 +365,7 @@ def test_registry_config_maps_to_runtime_env():
             },
             "structured_tool_calls": True,
             "include_tools_every_turn": True,
+            "mcp_toolset_id": "mcp-ts-test",
         }
     )
 
@@ -351,6 +375,21 @@ def test_registry_config_maps_to_runtime_env():
     assert env["REGISTRY_REGION"] == "cn-beijing"
     assert env["STRUCTURED_TOOL_CALLS"] == "true"
     assert env["INCLUDE_TOOLS_EVERY_TURN"] == "true"
+    assert "MCP_TOOLSET_ID" not in env
+
+
+def test_mcp_toolset_id_maps_to_runtime_binding_not_env():
+    cfg = build_agentkit_config(
+        "h",
+        "cn-beijing",
+        {"HARNESS_NAME": "h"},
+        mcp_toolset_id="mcp-ts-test",
+    )
+
+    assert cfg["common"]["runtime_envs"] == {"HARNESS_NAME": "h"}
+    assert cfg["launch_types"]["cloud"]["runtime_bindings"] == {
+        "mcp_toolset_id": "mcp-ts-test"
+    }
 
 
 def test_add_harness_register_self_resolves_runtime_and_space(
@@ -479,7 +518,7 @@ def test_add_harness_register_self_requires_harness_json_entry(tmp_path):
     )
 
     assert result.exit_code == 1
-    assert "does not contain an entry for 'h'" in result.output
+    assert "does not contain an entry for 'h'" in _squash_output(result.output)
 
 
 def test_add_harness_register_self_requires_url_and_runtime_id(tmp_path):
@@ -499,7 +538,7 @@ def test_add_harness_register_self_requires_url_and_runtime_id(tmp_path):
     )
 
     assert result.exit_code == 1
-    assert "missing required field(s): runtime_id" in result.output
+    assert "missing required field(s): runtime_id" in _squash_output(result.output)
 
 
 def test_add_harness_register_self_rejects_invalid_network_type(tmp_path):

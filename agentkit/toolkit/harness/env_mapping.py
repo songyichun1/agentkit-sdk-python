@@ -54,6 +54,10 @@ COMPONENT_TYPE_ENV: Dict[str, str] = {
     "short_term_memory": "SHORT_TERM_MEMORY_TYPE",
 }
 
+# Spec fields consumed by the deploy wrapper/platform rather than the harness
+# container. They must not be flattened into runtime environment variables.
+DEPLOY_ONLY_FIELDS = frozenset({"auth", "mcp_toolset_id"})
+
 # Backend ``type`` -> {harness connection param: VeADK env var}. Mirrors the
 # pydantic-settings env prefixes in ``veadk.configs.database_configs``;
 # credentials map to the shared top-level ``VOLCENGINE_*`` vars. Backends with no
@@ -182,7 +186,9 @@ def to_runtime_env(spec: Dict[str, Any]) -> Dict[str, str]:
     # The `auth` block is excluded too: it configures the runtime's gateway
     # authorizer at deploy time (custom_jwt), not the container environment.
     rest = {
-        k: v for k, v in spec.items() if k not in COMPONENT_TYPE_ENV and k != "auth"
+        k: v
+        for k, v in spec.items()
+        if k not in COMPONENT_TYPE_ENV and k not in DEPLOY_ONLY_FIELDS
     }
     for key, value in _flatten_dict(rest).items():
         if _is_empty(value):

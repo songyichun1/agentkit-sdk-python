@@ -609,6 +609,11 @@ def harness_command(
         "--include-tools-every-turn/--reuse-tool-context",
         help="Include tool definitions on every model turn.",
     ),
+    mcp_toolset_id: Optional[str] = typer.Option(
+        None,
+        "--mcp-toolset-id",
+        help="Bind the deployed harness Runtime to an MCP Toolset ID.",
+    ),
     registry: Optional[str] = typer.Option(
         None,
         "--registry",
@@ -826,6 +831,8 @@ def harness_command(
         data["structured_tool_calls"] = structured_tool_calls
     if include_tools_every_turn is not None:
         data["include_tools_every_turn"] = include_tools_every_turn
+    if mcp_toolset_id is not None:
+        data["mcp_toolset_id"] = mcp_toolset_id
     tools_list = _split_csv(tools)
     if tools_list is not None:
         data["tools"] = tools_list
