@@ -1,0 +1,186 @@
+# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd. and/or its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""List command for sandbox CLI."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import typer
+
+from agentkit.toolkit.cli.sandbox.agentkit_client import AgentkitToolsClient
+from agentkit.toolkit.cli.sandbox.config_store import (
+    SandboxConfigError,
+    config_default_if_unprovided,
+    config_tool_identifier_defaults_if_unprovided,
+    configured_sandbox_config,
+)
+from agentkit.toolkit.cli.sandbox.session_create import SANDBOX_TOOL_ID_ENV
+from agentkit.toolkit.cli.sandbox.tool_resolve import (
+    SandboxToolType,
+    resolve_existing_sandbox_tool_id,
+)
+from agentkit.toolkit.cli.sandbox.sandbox_client import (
+    echo_json,
+    error,
+    find_session_result,
+    get_all_session_results,
+)
+
+
+def _session_not_found_result(
+    *,
+    session_id: str,
+    tool_id: object,
+) -> dict[str, object]:
+    return {
+        "tool_id": tool_id,
+        "session_id": session_id,
+        "error_msg": f"Sandbox session not found: {session_id}",
+    }
+
+
+def _resolve_list_tool_id(
+    *,
+    tool_id: Optional[str],
+    tool_name: Optional[str],
+    tool_type: SandboxToolType,
+    resolve_current: bool = False,
+) -> str | None:
+    explicit_tool_id = (tool_id or "").strip()
+    explicit_tool_name = (tool_name or "").strip()
+    if tool_name is not None and not explicit_tool_name:
+        error("--tool-name cannot be empty")
+    if explicit_tool_id and explicit_tool_name:
+        error("Specify only one of --tool-id or --tool-name.")
+    if explicit_tool_id:
+        return explicit_tool_id
+    if explicit_tool_name:
+        return resolve_existing_sandbox_tool_id(
+            tool_id=None,
+            tool_name=explicit_tool_name,
+            tool_type=tool_type,
+            client=AgentkitToolsClient(),
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
+    if resolve_current:
+        return resolve_existing_sandbox_tool_id(
+            tool_id=None,
+            tool_name=None,
+            tool_type=tool_type,
+            client=AgentkitToolsClient(),
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
+    return None
+
+
+def _filter_sessions_by_tool(
+    sessions: dict[str, object],
+    tool_id: str | None,
+) -> dict[str, object]:
+    if not tool_id:
+        return sessions
+    tool_sessions = sessions.get(tool_id)
+    if not isinstance(tool_sessions, dict):
+        return {}
+    return {tool_id: tool_sessions}
+
+
+def list_command(
+    ctx: typer.Context,
+    session_id: Optional[str] = typer.Option(
+        None,
+        "--session-id",
+        "--sid",
+        "-s",
+        help=(
+            "Sandbox session ID to look up. Omit to return all local sandbox sessions."
+        ),
+    ),
+    tool_id: Optional[str] = typer.Option(
+        None,
+        "--tool-id",
+        help="Sandbox tool ID used to filter local sessions.",
+    ),
+    tool_name: Optional[str] = typer.Option(
+        None,
+        "--tool-name",
+        help="Sandbox tool name. Resolved with ListTools(Name=...).",
+    ),
+    tool_type: SandboxToolType = typer.Option(
+        SandboxToolType.CODE_ENV,
+        "--tool-type",
+        help="Sandbox tool type to resolve --tool-name.",
+    ),
+) -> None:
+    """List locally cached sandbox sessions."""
+    try:
+        config_defaults = configured_sandbox_config()
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
+            ctx,
+            tool_id=tool_id,
+            tool_name=tool_name,
+            data=config_defaults,
+        )
+        tool_type = config_default_if_unprovided(
+            ctx,
+            "tool_type",
+            "tool-type",
+            tool_type,
+            data=config_defaults,
+            transform=SandboxToolType,
+        )
+        resolved_tool_id = _resolve_list_tool_id(
+            tool_id=tool_id,
+            tool_name=tool_name,
+            tool_type=tool_type,
+            resolve_current=True,
+        )
+        result = (
+            find_session_result(resolved_tool_id, session_id)
+            if session_id and resolved_tool_id
+            else None
+        )
+        if not session_id:
+            result = _filter_sessions_by_tool(
+                get_all_session_results(),
+                resolved_tool_id,
+            )
+    except typer.Exit:
+        raise
+    except (SandboxConfigError, ValueError) as exc:
+        error(str(exc))
+    except Exception as exc:
+        error(str(exc))
+
+    if session_id and result is None:
+        echo_json(
+            _session_not_found_result(
+                session_id=session_id,
+                tool_id=resolved_tool_id or tool_id,
+            )
+        )
+        raise typer.Exit(1)
+
+    if session_id and resolved_tool_id and result.get("tool_id") != resolved_tool_id:
+        echo_json(
+            _session_not_found_result(
+                session_id=session_id,
+                tool_id=resolved_tool_id,
+            )
+        )
+        raise typer.Exit(1)
+
+    echo_json(result)

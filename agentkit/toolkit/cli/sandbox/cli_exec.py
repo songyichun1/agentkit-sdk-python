@@ -32,14 +32,18 @@ import requests
 import typer
 
 from agentkit.toolkit.cli.sandbox.agentkit_client import AgentkitToolsClient
-from agentkit.toolkit.cli.sandbox.cli_file import (
-    _build_remote_extract_command,
-    _create_sources_upload_archive,
-    _exec_shell_command,
-    _new_remote_archive_path,
-    _normalize_workspace,
-    _resolve_sandbox_path,
-    _upload_remote_file,
+from agentkit.toolkit.cli.sandbox.config_store import (
+    SandboxConfigError,
+    config_default_if_unprovided,
+    config_tool_identifier_defaults_if_unprovided,
+    configured_sandbox_config,
+    param_was_provided,
+)
+from agentkit.toolkit.cli.sandbox.cli_scp import (
+    SANDBOX_OPERAND_PREFIX,
+    _resolve_sandbox_operand,
+    _upload_scp_source,
+    _validate_scp_local_source,
 )
 from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
@@ -51,20 +55,20 @@ from agentkit.toolkit.cli.sandbox.model_config import (
     build_codex_hot_update_command,
     build_codex_hot_update_env,
     normalize_model_base_url,
+    validate_model_provider_base_url,
 )
-from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_SANDBOX_WORKSPACE
 from agentkit.toolkit.cli.sandbox.tool_resolve import (
     SandboxToolType,
     find_tool_model_provider,
     get_remote_tool_model_provider,
     get_tool_websearch_config,
+    resolve_existing_sandbox_tool_id,
 )
 from agentkit.toolkit.cli.sandbox.sandbox_client import (
     add_session_terminal_shell_id,
     build_bash_exec_url,
     build_terminal_ws_url,
     error,
-    find_session_result,
     remove_session_terminal_shell_id,
 )
 
@@ -81,19 +85,6 @@ IS_WINDOWS = os.name == "nt"
 def _terminal_size() -> dict[str, int]:
     size = shutil.get_terminal_size(fallback=(120, 40))
     return {"cols": size.columns, "rows": size.lines}
-
-
-def _param_was_provided(ctx: typer.Context, param_name: str) -> bool:
-    get_source = getattr(ctx, "get_parameter_source", None)
-    if get_source is None:
-        return False
-    try:
-        source = get_source(param_name)
-    except Exception:
-        return False
-    return getattr(source, "name", None) == "COMMANDLINE" or str(source).endswith(
-        "COMMANDLINE"
-    )
 
 
 def _codex_hot_update_requested(
@@ -411,81 +402,41 @@ def _connect_terminal(
             signal.signal(sigwinch, previous_sigwinch)
 
 
-def _resolve_exec_dst_dir(
-    *,
-    workspace: Optional[str],
-    dst_dir: Optional[str],
-) -> str:
-    resolved_workspace = _normalize_workspace(workspace) or DEFAULT_SANDBOX_WORKSPACE
-    raw_dst_dir = (dst_dir or "").strip()
-    if not raw_dst_dir:
-        return resolved_workspace
-    if raw_dst_dir.startswith("/"):
-        error("--dst-dir must be relative to --workspace")
-    return _resolve_sandbox_path(
-        raw_dst_dir,
-        workspace=resolved_workspace,
-        option_name="--dst-dir",
-    )
-
-
-def _resolve_exec_upload_sources(src_dirs: list[Path]) -> list[Path]:
-    resolved_sources = []
-    seen_names: set[str] = set()
-    for src_dir in src_dirs:
-        if not src_dir.exists():
-            error(f"Source path not found: {src_dir}")
-        if not src_dir.is_dir() and not src_dir.is_file():
-            error(f"Source path is not a file or directory: {src_dir}")
-        if src_dir.name in seen_names:
-            error(f"Duplicate source name: {src_dir.name}")
-        seen_names.add(src_dir.name)
-        resolved_sources.append(src_dir)
-    return resolved_sources
-
-
-def _collect_exec_upload_sources(
+def _collect_copy_specs(
     ctx: typer.Context,
-    src_dir: Optional[Path],
-) -> list[Path]:
-    src_dirs = [Path(value) for value in ctx.args]
-    if src_dirs and not src_dir:
-        error("Additional source paths require --src-dir")
-    if src_dir:
-        src_dirs.insert(0, src_dir)
-    return src_dirs
+    copy_sources: Optional[list[str]],
+) -> list[tuple[Path, str]]:
+    sources = list(copy_sources or [])
+    destinations = list(ctx.args)
+    if not sources:
+        if destinations:
+            error(f"Unexpected argument: {destinations[0]}")
+        return []
+    if len(sources) != len(destinations):
+        error("--copy requires SOURCE and DESTINATION and may be repeated")
+
+    result = []
+    for source, destination in zip(sources, destinations):
+        if source.startswith(SANDBOX_OPERAND_PREFIX):
+            error("--copy only supports local-to-sandbox transfers")
+        local_source = _validate_scp_local_source(Path(source))
+        sandbox_destination = destination
+        if not sandbox_destination.startswith(SANDBOX_OPERAND_PREFIX):
+            sandbox_destination = f"{SANDBOX_OPERAND_PREFIX}{sandbox_destination}"
+        result.append((local_source, _resolve_sandbox_operand(sandbox_destination)))
+    return result
 
 
-def _upload_source_before_exec(
+def _upload_copy_specs(
     session: dict[str, object],
-    *,
-    workspace: Optional[str],
-    src_dirs: list[Path],
-    dst_dir: Optional[str],
-) -> str:
-    resolved_dst_dir = _resolve_exec_dst_dir(
-        workspace=workspace,
-        dst_dir=dst_dir,
-    )
-    resolved_sources = _resolve_exec_upload_sources(src_dirs)
-    archive_path = _create_sources_upload_archive(resolved_sources)
-    remote_archive_path = _new_remote_archive_path("agentkit-upload")
-    try:
-        _upload_remote_file(
+    specs: list[tuple[Path, str]],
+) -> None:
+    for source, destination in specs:
+        _upload_scp_source(
             session,
-            local_path=archive_path,
-            remote_path=remote_archive_path,
+            source=source,
+            destination=destination,
         )
-        _exec_shell_command(
-            session,
-            _build_remote_extract_command(
-                archive_path=remote_archive_path,
-                dst_dir=resolved_dst_dir,
-            ),
-        )
-    finally:
-        archive_path.unlink(missing_ok=True)
-    return resolved_dst_dir
 
 
 def _resolve_exec_model_tool_id(
@@ -494,16 +445,10 @@ def _resolve_exec_model_tool_id(
     tool_id: Optional[str],
     model_name: Optional[str],
 ) -> str | None:
+    del session_id
     if not (model_name or "").strip():
         return None
     resolved_tool_id = (tool_id or "").strip()
-    if not resolved_tool_id and session_id:
-        existing = find_session_result(session_id)
-        if existing:
-            existing_tool_id = existing.get("tool_id")
-            if isinstance(existing_tool_id, str):
-                resolved_tool_id = existing_tool_id.strip()
-
     return resolved_tool_id or None
 
 
@@ -594,10 +539,15 @@ def exec_command(
         "--tool-id",
         help=f"Sandbox tool ID. Defaults to {SANDBOX_TOOL_ID_ENV}.",
     ),
+    tool_name: Optional[str] = typer.Option(
+        None,
+        "--tool-name",
+        help="Sandbox tool name. Resolved with ListTools(Name=...).",
+    ),
     tool_type: SandboxToolType = typer.Option(
         SandboxToolType.CODE_ENV,
         "--tool-type",
-        help="Sandbox tool type to resolve when --tool-id is omitted.",
+        help="Sandbox tool type to resolve when tool id/name is omitted.",
     ),
     command: Optional[str] = typer.Option(
         None,
@@ -615,25 +565,13 @@ def exec_command(
             "behavior; use 'tmux' to attach to or create a tmux session."
         ),
     ),
-    workspace: str = typer.Option(
-        DEFAULT_SANDBOX_WORKSPACE,
-        "--workspace",
-        help=(
-            "Sandbox workspace root. Relative --dst-dir values are "
-            "resolved inside this directory."
-        ),
-    ),
-    src_dir: Optional[Path] = typer.Option(
+    copy: Optional[list[str]] = typer.Option(
         None,
-        "--src-dir",
-        help=("Local file or directory to upload before opening the exec session."),
-    ),
-    dst_dir: Optional[str] = typer.Option(
-        None,
-        "--dst-dir",
+        "--copy",
+        metavar="SOURCE DESTINATION",
         help=(
-            "Relative sandbox destination directory for --src-dir. Defaults "
-            "to --workspace."
+            "Copy a local file or directory into the sandbox before exec. "
+            "May be repeated; sandbox: is optional for DESTINATION."
         ),
     ),
     git_config: Optional[str] = typer.Option(
@@ -687,11 +625,71 @@ def exec_command(
     ),
 ) -> None:
     """Open a streaming sandbox exec session. Press Ctrl-] or type exit/exit()."""
-    exec_mode = _normalize_exec_mode(mode)
     try:
-        model_api_key_was_provided = _param_was_provided(ctx, "model_api_key")
-        model_name_was_provided = _param_was_provided(ctx, "model_name")
-        model_base_url_was_provided = _param_was_provided(ctx, "model_base_url")
+        config_defaults = configured_sandbox_config()
+        session_id = config_default_if_unprovided(
+            ctx, "session_id", "session-id", session_id, data=config_defaults
+        )
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
+            ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
+        )
+        tool_type = config_default_if_unprovided(
+            ctx,
+            "tool_type",
+            "tool-type",
+            tool_type,
+            data=config_defaults,
+            transform=SandboxToolType,
+        )
+        git_config = config_default_if_unprovided(
+            ctx, "git_config", "git-config", git_config, data=config_defaults
+        )
+        model_name = config_default_if_unprovided(
+            ctx, "model_name", "model-name", model_name, data=config_defaults
+        )
+        model_api_key = config_default_if_unprovided(
+            ctx,
+            "model_api_key",
+            "model-api-key",
+            model_api_key,
+            data=config_defaults,
+        )
+        model_provider = config_default_if_unprovided(
+            ctx,
+            "model_provider",
+            "model-provider",
+            model_provider,
+            data=config_defaults,
+        )
+        model_base_url = config_default_if_unprovided(
+            ctx,
+            "model_base_url",
+            "model-base-url",
+            model_base_url,
+            data=config_defaults,
+        )
+        if tool_name:
+            tool_id = resolve_existing_sandbox_tool_id(
+                tool_id=tool_id,
+                tool_name=tool_name,
+                tool_type=tool_type,
+                client=AgentkitToolsClient(),
+                env_var_name=SANDBOX_TOOL_ID_ENV,
+            )
+            tool_name = None
+        exec_mode = _normalize_exec_mode(mode)
+        copy_specs = _collect_copy_specs(ctx, copy)
+        model_api_key_was_provided = param_was_provided(ctx, "model_api_key")
+        model_name_was_provided = param_was_provided(ctx, "model_name")
+        model_provider_was_provided = param_was_provided(ctx, "model_provider")
+        model_base_url_was_provided = param_was_provided(ctx, "model_base_url")
+        resolved_model_base_url = normalize_model_base_url(model_base_url)
+        validate_model_provider_base_url(
+            model_provider=model_provider,
+            model_base_url=resolved_model_base_url,
+            model_provider_was_provided=model_provider_was_provided,
+            model_base_url_was_provided=model_base_url_was_provided,
+        )
         resolved_model_provider = _resolve_exec_model_provider(
             session_id=session_id,
             tool_id=tool_id,
@@ -699,8 +697,6 @@ def exec_command(
             model_name=model_name,
             model_provider=model_provider,
         )
-        explicit_model_provider = bool((model_provider or "").strip())
-        resolved_model_base_url = normalize_model_base_url(model_base_url)
 
         resolved_tool_id = (tool_id or "").strip()
         ws_config = get_tool_websearch_config(
@@ -720,13 +716,14 @@ def exec_command(
         session, is_new_session = ensure_sandbox_session_with_status(
             session_id=session_id,
             tool_id=tool_id,
+            tool_name=tool_name,
             tool_type=tool_type.value,
             envs=build_model_envs(
                 model_name=model_name,
                 model_api_key=model_api_key,
                 model_provider=resolved_model_provider,
                 model_base_url=resolved_model_base_url,
-                model_provider_was_provided=explicit_model_provider,
+                model_provider_was_provided=model_provider_was_provided,
                 model_base_url_was_provided=model_base_url_was_provided,
                 include_codex_config=tool_type == SandboxToolType.CODE_ENV,
                 disable_websearch_apikey=disable_websearch,
@@ -753,6 +750,8 @@ def exec_command(
             )
     except typer.Exit:
         raise
+    except (SandboxConfigError, ValueError) as exc:
+        error(str(exc))
     except Exception as exc:
         error(str(exc))
 
@@ -761,14 +760,7 @@ def exec_command(
         error("Sandbox session missing session_id")
 
     try:
-        src_dirs = _collect_exec_upload_sources(ctx, src_dir)
-        if src_dirs:
-            _upload_source_before_exec(
-                session,
-                workspace=workspace,
-                src_dirs=src_dirs,
-                dst_dir=dst_dir,
-            )
+        _upload_copy_specs(session, copy_specs)
     except typer.Exit:
         raise
     except Exception as exc:
@@ -800,7 +792,10 @@ def exec_command(
     )
 
     def on_shell_id(remote_shell_id: str) -> None:
-        add_session_terminal_shell_id(session_id, remote_shell_id)
+        tool_id = session.get("tool_id")
+        if not isinstance(tool_id, str) or not tool_id.strip():
+            error("Sandbox session missing tool_id")
+        add_session_terminal_shell_id(tool_id.strip(), session_id, remote_shell_id)
         remember_cleanup_shell_id(remote_shell_id)
         typer.echo(f"Shell ID: {remote_shell_id}", err=True)
 
@@ -814,4 +809,11 @@ def exec_command(
         with cleanup_shell_ids_lock:
             shell_ids_to_cleanup = list(cleanup_shell_ids)
         for cleanup_shell_id in shell_ids_to_cleanup:
-            remove_session_terminal_shell_id(session_id, cleanup_shell_id)
+            tool_id = session.get("tool_id")
+            if not isinstance(tool_id, str) or not tool_id.strip():
+                error("Sandbox session missing tool_id")
+            remove_session_terminal_shell_id(
+                tool_id.strip(),
+                session_id,
+                cleanup_shell_id,
+            )

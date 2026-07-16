@@ -19,12 +19,14 @@ from __future__ import annotations
 import typer
 
 from agentkit.toolkit.cli.sandbox.cli_build import build_command
+from agentkit.toolkit.cli.sandbox.cli_config import config_command
 from agentkit.toolkit.cli.sandbox.cli_create import create_command
+from agentkit.toolkit.cli.sandbox.cli_delete import delete_command
 from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
-from agentkit.toolkit.cli.sandbox.cli_file import file_command
-from agentkit.toolkit.cli.sandbox.cli_get import get_command
+from agentkit.toolkit.cli.sandbox.cli_scp import scp_command
+from agentkit.toolkit.cli.sandbox.cli_list import list_command
 from agentkit.toolkit.cli.sandbox.cli_invoke import invoke_command
-from agentkit.toolkit.cli.sandbox.cli_init_dockerfile import init_dockerfile_command
+from agentkit.toolkit.cli.sandbox.cli_init import init_command
 from agentkit.toolkit.cli.sandbox.cli_model_login import codex_login_command
 from agentkit.toolkit.cli.sandbox.cli_mount import mount_command
 from agentkit.toolkit.cli.sandbox.cli_run import run_command
@@ -38,12 +40,13 @@ sandbox_app = typer.Typer(
 )
 
 sandbox_app.command(name="build")(build_command)
-sandbox_app.command(name="init-dockerfile")(init_dockerfile_command)
+sandbox_app.command(name="init")(init_command)
 sandbox_app.command(
     name="create",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )(create_command)
-sandbox_app.command(name="get")(get_command)
+sandbox_app.command(name="delete")(delete_command)
+sandbox_app.command(name="list")(list_command)
 sandbox_app.command(name="mount")(mount_command)
 sandbox_app.command(
     name="exec",
@@ -61,4 +64,5 @@ sandbox_app.command(
 sandbox_app.command(name="web")(web_command)
 sandbox_app.command(name="codex-login")(codex_login_command)
 sandbox_app.command(name="model-login")(codex_login_command)  # provider-agnostic alias
-sandbox_app.add_typer(file_command, name="file")
+sandbox_app.command(name="config")(config_command)
+sandbox_app.command(name="scp")(scp_command)

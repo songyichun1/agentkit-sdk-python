@@ -16,19 +16,30 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
 from pathlib import Path
-from typing import Any, NoReturn, Optional
+from typing import NoReturn, Optional
 
 import typer
-import yaml
 
 from agentkit.platform import VolcConfiguration
 from agentkit.sdk.tools.client import AgentkitToolsClient
 from agentkit.sdk.tools import types as tools_types
+from agentkit.toolkit.cli.sandbox.config_store import (
+    SandboxConfigError,
+    config_default_if_unprovided,
+    config_default_bool,
+    config_default_int,
+    config_default_list,
+    config_default_str,
+    get_legacy_sandbox_config_path,
+    configured_sandbox_config,
+    load_legacy_sandbox_image_defaults,
+    param_was_provided,
+    save_created_tool_config,
+)
 from agentkit.toolkit.cli.sandbox.env_config import (
     DEFAULT_CREATE_TOOL_TYPE,
     PRIVATE_TOOL_COMMAND,
@@ -49,7 +60,6 @@ from agentkit.toolkit.cli.sandbox.tos_config import (
     build_create_tool_tos_mount_config,
 )
 from agentkit.toolkit.cli.sandbox.sandbox_client import error
-from agentkit.toolkit.cli.sandbox.sandbox_client import SANDBOX_YAML_PATH
 from agentkit.toolkit.volcengine.services.tos_service import (
     TOSService,
     TOSServiceConfig,
@@ -67,47 +77,10 @@ TOOL_READY_STATUS = "Ready"
 TOOL_FAILED_STATUSES = {"Error", "Failed", "CreateFailed", "Deleting", "Deleted"}
 TOOL_WAIT_INTERVAL_SECONDS = 5
 TOOL_WAIT_TIMEOUT_SECONDS = 600
-NETWORK_CONFIG_FIELDS = (
-    "private_access",
-    "public_access",
-    "vpc_id",
-    "subnet_ids",
-    "enable_shared_internet_access",
-)
 
 
 def _get_sandbox_yaml_path() -> Path:
-    return Path.cwd() / SANDBOX_YAML_PATH
-
-
-def _load_sandbox_yaml_defaults() -> tuple[str, str] | None:
-    path = _get_sandbox_yaml_path()
-    if not path.exists():
-        return None
-
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        error(f"Invalid {SANDBOX_YAML_PATH}: {exc}")
-    except OSError as exc:
-        error(f"Failed to read {SANDBOX_YAML_PATH}: {exc}")
-
-    if not isinstance(payload, dict):
-        error(f"Invalid {SANDBOX_YAML_PATH}: expected a YAML mapping")
-
-    raw_tool_type = payload.get("tool_type")
-    raw_image_url = payload.get("image_url")
-    if not isinstance(raw_tool_type, str) or not raw_tool_type.strip():
-        error(f"Invalid {SANDBOX_YAML_PATH}: tool_type must be a non-empty string")
-    if not isinstance(raw_image_url, str) or not raw_image_url.strip():
-        error(f"Invalid {SANDBOX_YAML_PATH}: image_url must be a non-empty string")
-
-    tool_type = _validate_tool_type(raw_tool_type)
-    image_url = raw_image_url.strip()
-    if tool_type == PRIVATE_TOOL_TYPE and not image_url:
-        error(f"Invalid {SANDBOX_YAML_PATH}: image_url is required for Private tools")
-
-    return tool_type, image_url
+    return get_legacy_sandbox_config_path()
 
 
 def _resolve_create_tool_image_defaults(
@@ -118,7 +91,10 @@ def _resolve_create_tool_image_defaults(
     if tool_type is not None or image_url is not None:
         return tool_type or DEFAULT_CREATE_TOOL_TYPE, image_url
 
-    defaults = _load_sandbox_yaml_defaults()
+    defaults = load_legacy_sandbox_image_defaults(
+        path=_get_sandbox_yaml_path(),
+        validate=True,
+    )
     if defaults is None:
         return DEFAULT_CREATE_TOOL_TYPE, image_url
 
@@ -126,6 +102,9 @@ def _resolve_create_tool_image_defaults(
 
 
 def _resolve_region(env_var_name: str, service_key: str) -> str:
+    config_region = config_default_str("region")
+    if config_region:
+        return config_region
     env_region = (os.getenv(env_var_name) or "").strip()
     if env_region:
         return env_region
@@ -160,150 +139,62 @@ def _cpu_to_resource_shape(cpu: int) -> tuple[int, int]:
 
 
 def _network_config_error(message: str) -> NoReturn:
-    error(f"Invalid --network-config: {message}")
+    error(f"Invalid network configuration: {message}")
 
 
-def _load_network_config(value: str) -> dict[str, Any]:
-    raw = value.strip()
-    if not raw:
-        _network_config_error("value must not be empty")
-
-    if raw[0] in "{[":
-        source = "inline JSON"
-        content = raw
-    else:
-        path = Path(raw).expanduser()
-        source = str(path)
-        try:
-            content = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            _network_config_error(f"file not found: {source}")
-        except OSError as exc:
-            _network_config_error(f"failed to read file {source}: {exc}")
-
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError as exc:
-        _network_config_error(
-            f"{source} is not valid JSON at line {exc.lineno}, "
-            f"column {exc.colno}: {exc.msg}"
-        )
-
-    if not isinstance(payload, dict):
-        _network_config_error("expected a JSON object")
-    return payload
-
-
-def _get_network_bool(
-    payload: dict[str, Any],
-    field: str,
-    *,
-    default: bool,
-) -> bool:
-    if field not in payload or payload[field] is None:
-        return default
-    if not isinstance(payload[field], bool):
-        _network_config_error(f"{field} must be a boolean")
-    return payload[field]
-
-
-def _get_network_string(payload: dict[str, Any], field: str) -> Optional[str]:
-    if field not in payload or payload[field] is None:
-        return None
-    value = payload[field]
-    if not isinstance(value, str):
-        _network_config_error(f"{field} must be a string")
-    resolved = value.strip()
-    if not resolved:
-        _network_config_error(f"{field} must not be empty")
-    return resolved
-
-
-def _get_network_string_list(
-    payload: dict[str, Any],
-    field: str,
+def _parse_network_subnet_ids(
+    value: Optional[str],
 ) -> Optional[list[str]]:
-    if field not in payload or payload[field] is None:
+    if value is None:
         return None
-    value = payload[field]
-    if isinstance(value, str):
-        items = [item.strip() for item in value.split(",") if item.strip()]
-        if not items:
-            _network_config_error(f"{field} must contain at least one value")
-        return items
-    if not isinstance(value, list):
-        _network_config_error(f"{field} must be a string or an array of strings")
-    items = []
-    for index, item in enumerate(value):
-        if not isinstance(item, str):
-            _network_config_error(f"{field}[{index}] must be a string")
-        resolved = item.strip()
-        if not resolved:
-            _network_config_error(f"{field}[{index}] must not be empty")
-        items.append(resolved)
+    items = [item.strip() for item in value.split(",") if item.strip()]
     if not items:
-        _network_config_error(f"{field} must contain at least one value")
+        _network_config_error("--network-subnet-ids must contain at least one value")
     return items
 
 
 def _build_network_configuration(
-    network_config: Optional[str] = None,
+    *,
+    network_enable_public: bool = True,
+    network_enable_private: bool = False,
+    network_enable_shared_internet: bool = False,
+    network_vpc_id: Optional[str] = None,
+    network_subnet_ids: Optional[str] = None,
 ) -> tools_types.NetworkForCreateTool:
-    if not network_config:
-        return tools_types.NetworkForCreateTool(
-            EnablePublicNetwork=True,
-            EnablePrivateNetwork=False,
-        )
+    vpc_id = (network_vpc_id or "").strip() or None
+    subnet_ids = _parse_network_subnet_ids(network_subnet_ids)
 
-    payload = _load_network_config(network_config)
-    unknown_fields = sorted(set(payload) - set(NETWORK_CONFIG_FIELDS))
-    if unknown_fields:
-        allowed = ", ".join(NETWORK_CONFIG_FIELDS)
+    if not network_enable_private and not network_enable_public:
         _network_config_error(
-            f"unsupported field {unknown_fields[0]!r}; allowed fields: {allowed}"
+            "--network-private and --network-public cannot both be false"
         )
-
-    private_access = _get_network_bool(
-        payload,
-        "private_access",
-        default=False,
-    )
-    public_access = _get_network_bool(payload, "public_access", default=True)
-    vpc_id = _get_network_string(payload, "vpc_id")
-    subnet_ids = _get_network_string_list(payload, "subnet_ids")
-    enable_shared_internet_access = _get_network_bool(
-        payload,
-        "enable_shared_internet_access",
-        default=False,
-    )
-
-    if not private_access and not public_access:
-        _network_config_error("private_access and public_access cannot both be false")
-    if private_access and not vpc_id:
-        _network_config_error("vpc_id is required when private_access is true")
-    if not private_access and any(
+    if network_enable_private and not vpc_id:
+        _network_config_error(
+            "--network-vpc-id is required when --network-private is true"
+        )
+    if not network_enable_private and any(
         [
             vpc_id,
             subnet_ids,
-            payload.get("enable_shared_internet_access") is not None,
+            network_enable_shared_internet,
         ]
     ):
         _network_config_error(
-            "vpc_id, subnet_ids, and enable_shared_internet_access require "
-            "private_access=true"
+            "--network-vpc-id, --network-subnet-ids, and "
+            "--network-shared-internet require --network-private"
         )
 
     vpc_configuration = None
-    if private_access:
+    if network_enable_private:
         vpc_configuration = tools_types.NetworkVpcForCreateTool(
             VpcId=vpc_id,
             SubnetIds=subnet_ids,
-            EnableSharedInternetAccess=enable_shared_internet_access,
+            EnableSharedInternetAccess=network_enable_shared_internet,
         )
 
     return tools_types.NetworkForCreateTool(
-        EnablePublicNetwork=public_access,
-        EnablePrivateNetwork=private_access,
+        EnablePublicNetwork=network_enable_public,
+        EnablePrivateNetwork=network_enable_private,
         VpcConfiguration=vpc_configuration,
     )
 
@@ -326,7 +217,11 @@ def _build_create_tool_request(
     websearch_apikey: Optional[str] = None,
     image_url: Optional[str] = None,
     enable_snapshot: bool = False,
-    network_config: Optional[str] = None,
+    network_enable_public: bool = True,
+    network_enable_private: bool = False,
+    network_enable_shared_internet: bool = False,
+    network_vpc_id: Optional[str] = None,
+    network_subnet_ids: Optional[str] = None,
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = _validate_tool_type(tool_type)
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
@@ -382,7 +277,13 @@ def _build_create_tool_request(
                 ApiKeyLocation="Header",
             )
         ),
-        NetworkConfiguration=_build_network_configuration(network_config),
+        NetworkConfiguration=_build_network_configuration(
+            network_enable_public=network_enable_public,
+            network_enable_private=network_enable_private,
+            network_enable_shared_internet=network_enable_shared_internet,
+            network_vpc_id=network_vpc_id,
+            network_subnet_ids=network_subnet_ids,
+        ),
         TosMountConfig=tos_mount_config,
         Envs=envs,
     )
@@ -555,12 +456,18 @@ def create_tool(
     model_api_key: Optional[str] = None,
     model_provider: str | ModelProviderType | None = None,
     model_base_url: Optional[str] = None,
+    model_provider_was_provided: Optional[bool] = None,
+    model_base_url_was_provided: Optional[bool] = None,
     skill_role_name: Optional[str] = None,
     skill_role_name_provided: bool = False,
     websearch_apikey: Optional[str] = None,
     image_url: Optional[str] = None,
     enable_snapshot: bool = False,
-    network_config: Optional[str] = None,
+    network_enable_public: bool = True,
+    network_enable_private: bool = False,
+    network_enable_shared_internet: bool = False,
+    network_vpc_id: Optional[str] = None,
+    network_subnet_ids: Optional[str] = None,
 ) -> dict[str, object]:
     resolved_model_base_url = normalize_model_base_url(model_base_url)
     raw_model_provider = (
@@ -572,6 +479,16 @@ def create_tool(
         resolved_model_base_url
     )
     resolved_model_provider = normalize_model_provider(effective_model_provider)
+    resolved_model_provider_was_provided = (
+        bool((raw_model_provider or "").strip())
+        if model_provider_was_provided is None
+        else model_provider_was_provided
+    )
+    resolved_model_base_url_was_provided = (
+        bool(resolved_model_base_url)
+        if model_base_url_was_provided is None
+        else model_base_url_was_provided
+    )
     region = _resolve_region(SANDBOX_REGION_ENV, "agentkit")
     tos_region = _resolve_region(SANDBOX_TOS_REGION_ENV, "tos")
 
@@ -596,13 +513,17 @@ def create_tool(
         model_api_key=model_api_key,
         model_provider=effective_model_provider,
         model_base_url=resolved_model_base_url,
-        model_provider_was_provided=bool((raw_model_provider or "").strip()),
-        model_base_url_was_provided=bool(resolved_model_base_url),
+        model_provider_was_provided=resolved_model_provider_was_provided,
+        model_base_url_was_provided=resolved_model_base_url_was_provided,
         role_name=resolved_role_name,
         websearch_apikey=resolved_websearch_apikey,
         image_url=image_url,
         enable_snapshot=enable_snapshot,
-        network_config=network_config,
+        network_enable_public=network_enable_public,
+        network_enable_private=network_enable_private,
+        network_enable_shared_internet=network_enable_shared_internet,
+        network_vpc_id=network_vpc_id,
+        network_subnet_ids=network_subnet_ids,
     )
     client = AgentkitToolsClient(
         region=region,
@@ -704,13 +625,32 @@ def create_command(
         "--enable-snapshot",
         help="Enable snapshot support for the created sandbox tool.",
     ),
-    network_config: Optional[str] = typer.Option(
+    network_enable_public: bool = typer.Option(
+        True,
+        "--network-public/--no-network-public",
+        help="Enable public network access for the sandbox tool.",
+    ),
+    network_enable_private: bool = typer.Option(
+        False,
+        "--network-private/--no-network-private",
+        help="Enable private VPC network access for the sandbox tool.",
+    ),
+    network_enable_shared_internet: bool = typer.Option(
+        False,
+        "--network-shared-internet/--no-network-shared-internet",
+        help="Enable shared internet access for private VPC networking.",
+    ),
+    network_vpc_id: Optional[str] = typer.Option(
         None,
-        "--network-config",
+        "--network-vpc-id",
+        help="VPC ID for private network access. Requires --network-private.",
+    ),
+    network_subnet_ids: Optional[str] = typer.Option(
+        None,
+        "--network-subnet-ids",
         help=(
-            "Network config as inline JSON or a JSON file path. Fields: "
-            "private_access=false, public_access=true, vpc_id, subnet_ids, "
-            "enable_shared_internet_access. private_access=true requires vpc_id."
+            "Comma-separated subnet IDs for private network access, for example "
+            "subnet-a,subnet-b."
         ),
     ),
 ) -> None:
@@ -722,13 +662,123 @@ def create_command(
     """
     result = None
     try:
+        config_defaults = configured_sandbox_config()
+        tool_type = config_default_if_unprovided(
+            ctx, "tool_type", "tool-type", tool_type, data=config_defaults
+        )
+        tos_bucket = config_default_if_unprovided(
+            ctx, "tos_bucket", "tos-bucket", tos_bucket, data=config_defaults
+        )
+        tos_mount = config_default_if_unprovided(
+            ctx, "tos_mount", "tos-mount", tos_mount, data=config_defaults
+        )
+        cpu = config_default_if_unprovided(
+            ctx,
+            "cpu",
+            "cpu",
+            cpu,
+            data=config_defaults,
+            getter=config_default_int,
+        )
+        model_name = config_default_if_unprovided(
+            ctx, "model_name", "model-name", model_name, data=config_defaults
+        )
+        model_api_key = config_default_if_unprovided(
+            ctx,
+            "model_api_key",
+            "model-api-key",
+            model_api_key,
+            data=config_defaults,
+        )
+        model_provider = config_default_if_unprovided(
+            ctx,
+            "model_provider",
+            "model-provider",
+            model_provider,
+            data=config_defaults,
+        )
+        model_base_url = config_default_if_unprovided(
+            ctx,
+            "model_base_url",
+            "model-base-url",
+            model_base_url,
+            data=config_defaults,
+        )
+        websearch_apikey = config_default_if_unprovided(
+            ctx,
+            "websearch_apikey",
+            "websearch-apikey",
+            websearch_apikey,
+            data=config_defaults,
+        )
+        image_url = config_default_if_unprovided(
+            ctx, "image_url", "image-url", image_url, data=config_defaults
+        )
+        enable_snapshot = config_default_if_unprovided(
+            ctx,
+            "enable_snapshot",
+            "enable-snapshot",
+            enable_snapshot,
+            data=config_defaults,
+            getter=config_default_bool,
+        )
+        network_enable_public = config_default_if_unprovided(
+            ctx,
+            "network_enable_public",
+            "network-public",
+            network_enable_public,
+            data=config_defaults,
+            getter=config_default_bool,
+        )
+        network_enable_private = config_default_if_unprovided(
+            ctx,
+            "network_enable_private",
+            "network-private",
+            network_enable_private,
+            data=config_defaults,
+            getter=config_default_bool,
+        )
+        network_enable_shared_internet = config_default_if_unprovided(
+            ctx,
+            "network_enable_shared_internet",
+            "network-shared-internet",
+            network_enable_shared_internet,
+            data=config_defaults,
+            getter=config_default_bool,
+        )
+        network_vpc_id = config_default_if_unprovided(
+            ctx,
+            "network_vpc_id",
+            "network-vpc-id",
+            network_vpc_id,
+            data=config_defaults,
+        )
+        network_subnet_ids = config_default_if_unprovided(
+            ctx,
+            "network_subnet_ids",
+            "network-subnet-ids",
+            network_subnet_ids,
+            data=config_defaults,
+            getter=config_default_list,
+            transform=lambda values: ",".join(values),
+        )
         skill_role_name, skill_role_name_provided = _resolve_create_extra_args(ctx)
+        if not skill_role_name_provided:
+            configured_role_name = config_default_str(
+                "role-name",
+                data=config_defaults,
+            )
+            if configured_role_name:
+                skill_role_name = configured_role_name
+                skill_role_name_provided = True
         tool_type, image_url = _resolve_create_tool_image_defaults(
             tool_type=tool_type,
             image_url=image_url,
         )
         if tos_mount is not None and not (tos_bucket or "").strip():
             error("--tos-mount requires --tos-bucket")
+        model_provider_was_provided = param_was_provided(ctx, "model_provider")
+        model_base_url_was_provided = param_was_provided(ctx, "model_base_url")
         result = create_tool(
             tool_type=tool_type,
             tool_name=tool_name,
@@ -739,16 +789,28 @@ def create_command(
             model_api_key=model_api_key,
             model_provider=model_provider,
             model_base_url=model_base_url,
+            model_provider_was_provided=model_provider_was_provided,
+            model_base_url_was_provided=model_base_url_was_provided,
             skill_role_name=skill_role_name,
             skill_role_name_provided=skill_role_name_provided,
             websearch_apikey=websearch_apikey,
             image_url=image_url,
             enable_snapshot=enable_snapshot,
-            network_config=network_config,
+            network_enable_public=network_enable_public,
+            network_enable_private=network_enable_private,
+            network_enable_shared_internet=network_enable_shared_internet,
+            network_vpc_id=network_vpc_id,
+            network_subnet_ids=network_subnet_ids,
         )
         save_tool_result_if_resolvable(str(result["tool_type"]), result)
+        save_created_tool_config(
+            tool_id=str(result["tool_id"]),
+            tool_name=str(result.get("name") or ""),
+        )
     except (typer.Abort, typer.Exit):
         raise
+    except SandboxConfigError as exc:
+        error(str(exc))
     except Exception as exc:
         error(str(exc))
 

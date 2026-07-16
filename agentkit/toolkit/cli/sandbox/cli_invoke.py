@@ -33,16 +33,27 @@ from agentkit.toolkit.cli.sandbox.a2a_client import (
     task_result_text,
     task_state,
 )
+from agentkit.toolkit.cli.sandbox.config_store import (
+    SandboxConfigError,
+    config_default_if_unprovided,
+    config_default_int,
+    config_tool_identifier_defaults_if_unprovided,
+    configured_sandbox_config,
+)
 from agentkit.toolkit.cli.sandbox.env_config import (
     MODEL_AGENT_ENV_KEYS as _MODEL_AGENT_ENV_KEYS,
     build_invoke_session_envs as build_invoke_model_agent_envs,
 )
+from agentkit.toolkit.cli.sandbox.agentkit_client import AgentkitToolsClient
 from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
     ensure_sandbox_session,
 )
 from agentkit.toolkit.cli.sandbox.sandbox_client import echo_json, error
-from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
+from agentkit.toolkit.cli.sandbox.tool_resolve import (
+    SandboxToolType,
+    resolve_existing_sandbox_tool_id,
+)
 
 MODEL_AGENT_ENV_KEYS = _MODEL_AGENT_ENV_KEYS
 
@@ -50,11 +61,26 @@ MODEL_AGENT_ENV_KEYS = _MODEL_AGENT_ENV_KEYS
 def _resolve_invoke_tool_id(
     *,
     tool_id: Optional[str],
+    tool_name: Optional[str],
     tool_type: SandboxToolType,
 ) -> str:
     explicit_tool_id = (tool_id or "").strip()
+    explicit_tool_name = (tool_name or "").strip()
+    if explicit_tool_id and explicit_tool_name:
+        error("Specify only one of --tool-id or --tool-name.")
     if explicit_tool_id:
         return explicit_tool_id
+    if explicit_tool_name:
+        resolved_tool_id = resolve_existing_sandbox_tool_id(
+            tool_id=None,
+            tool_name=explicit_tool_name,
+            tool_type=tool_type,
+            client=AgentkitToolsClient(),
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
+        if not resolved_tool_id:
+            error(f"Sandbox tool not found by name: {explicit_tool_name}")
+        return resolved_tool_id
 
     env_tool_id = (os.getenv(SANDBOX_TOOL_ID_ENV) or "").strip()
     if env_tool_id:
@@ -221,6 +247,11 @@ def invoke_command(
             "--tool-type is used as the tool ID."
         ),
     ),
+    tool_name: Optional[str] = typer.Option(
+        None,
+        "--tool-name",
+        help="Sandbox tool name. Resolved with ListTools(Name=...).",
+    ),
     tool_type: SandboxToolType = typer.Option(
         SandboxToolType.SKILL_ENV,
         "--tool-type",
@@ -287,24 +318,67 @@ def invoke_command(
     ),
 ) -> None:
     """Invoke a sandbox A2A agent."""
-    resolved_task_id = (task_id or "").strip()
-    resolved_prompt = (prompt or "").strip()
-    resolved_async_mode = _resolve_async_mode(ctx, async_mode)
-    if not resolved_task_id and not resolved_prompt:
-        error("--prompt is required unless --task-id is provided")
-    if ttl is not None and ttl <= 0:
-        error("--ttl must be greater than 0")
-    if history_length < 0:
-        error("--history-length must be non-negative")
-
-    resolved_timeout = _normalize_timeout(timeout)
-    resolved_interval = _normalize_interval(interval)
-    resolved_tool_id = _resolve_invoke_tool_id(
-        tool_id=tool_id,
-        tool_type=tool_type,
-    )
-
     try:
+        config_defaults = configured_sandbox_config()
+        session_id = config_default_if_unprovided(
+            ctx, "session_id", "session-id", session_id, data=config_defaults
+        )
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
+            ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
+        )
+        tool_type = config_default_if_unprovided(
+            ctx,
+            "tool_type",
+            "tool-type",
+            tool_type,
+            data=config_defaults,
+            transform=SandboxToolType,
+        )
+        ttl = config_default_if_unprovided(
+            ctx, "ttl", "ttl", ttl, data=config_defaults, getter=config_default_int
+        )
+        model_name = config_default_if_unprovided(
+            ctx, "model_name", "model-name", model_name, data=config_defaults
+        )
+        model_provider = config_default_if_unprovided(
+            ctx,
+            "model_provider",
+            "model-provider",
+            model_provider,
+            data=config_defaults,
+        )
+        model_base_url = config_default_if_unprovided(
+            ctx,
+            "model_base_url",
+            "model-base-url",
+            model_base_url,
+            data=config_defaults,
+        )
+        model_api_key = config_default_if_unprovided(
+            ctx,
+            "model_api_key",
+            "model-api-key",
+            model_api_key,
+            data=config_defaults,
+        )
+
+        resolved_task_id = (task_id or "").strip()
+        resolved_prompt = (prompt or "").strip()
+        resolved_async_mode = _resolve_async_mode(ctx, async_mode)
+        if not resolved_task_id and not resolved_prompt:
+            error("--prompt is required unless --task-id is provided")
+        if ttl is not None and ttl <= 0:
+            error("--ttl must be greater than 0")
+        if history_length < 0:
+            error("--history-length must be non-negative")
+
+        resolved_timeout = _normalize_timeout(timeout)
+        resolved_interval = _normalize_interval(interval)
+        resolved_tool_id = _resolve_invoke_tool_id(
+            tool_id=tool_id,
+            tool_name=tool_name,
+            tool_type=tool_type,
+        )
         session = ensure_sandbox_session(
             session_id=session_id,
             tool_id=resolved_tool_id,
@@ -321,6 +395,8 @@ def invoke_command(
         )
     except typer.Exit:
         raise
+    except (SandboxConfigError, ValueError) as exc:
+        error(str(exc))
     except Exception as exc:
         error(str(exc))
 

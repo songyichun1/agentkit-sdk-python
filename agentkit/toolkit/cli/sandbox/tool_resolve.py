@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Optional
 
 from agentkit.sdk.tools import types as tools_types
+from agentkit.toolkit.cli.tool_lookup import (
+    list_tools_by_name,
+    print_tool_matches,
+    string_field,
+)
 from agentkit.toolkit.cli.sandbox.agentkit_client import (
     AgentkitToolsClient,
     is_tip_agentkit_client,
@@ -441,10 +446,76 @@ def _list_first_tool(
     return None
 
 
+def _list_tools_by_name(client: AgentkitToolsClient, tool_name: str) -> list[object]:
+    try:
+        return list_tools_by_name(client, tool_name)
+    except Exception as exc:
+        error(f"Failed to list sandbox tools by name {tool_name}: {exc}")
+
+
+def _resolve_tool_id_by_name(
+    client: AgentkitToolsClient,
+    tool_name: str,
+) -> str:
+    matches = _list_tools_by_name(client, tool_name)
+    if not matches:
+        error(f"Sandbox tool not found by name: {tool_name}")
+    if len(matches) > 1:
+        print_tool_matches(
+            tool_name,
+            matches,
+            title=f"Multiple sandbox tools matched: {tool_name}",
+        )
+        error("Multiple sandbox tools matched --tool-name. Retry with --tool-id.")
+
+    resolved_tool_id = string_field(matches[0], "ToolId", "tool_id")
+    if not resolved_tool_id:
+        error(f"ListTools response missing ToolId for name: {tool_name}")
+    return resolved_tool_id
+
+
 def _create_tool(tool_type: str) -> str:
+    from agentkit.toolkit.cli.sandbox.config_store import (
+        config_default_bool,
+        config_default_int,
+        config_default_list,
+        config_default_str,
+        configured_sandbox_config,
+    )
     from agentkit.toolkit.cli.sandbox.cli_create import create_tool
 
-    result = create_tool(tool_type=tool_type)
+    config_defaults = configured_sandbox_config()
+    role_name = config_default_str("role-name", data=config_defaults)
+    enable_public = config_default_bool("network-public", data=config_defaults)
+    enable_private = config_default_bool("network-private", data=config_defaults)
+    enable_shared_internet = config_default_bool(
+        "network-shared-internet",
+        data=config_defaults,
+    )
+    subnet_ids = config_default_list("network-subnet-ids", data=config_defaults)
+    result = create_tool(
+        tool_type=tool_type,
+        cpu=config_default_int("cpu", data=config_defaults) or 4,
+        model_name=config_default_str("model-name", data=config_defaults),
+        model_api_key=config_default_str("model-api-key", data=config_defaults),
+        model_provider=config_default_str("model-provider", data=config_defaults),
+        model_base_url=config_default_str("model-base-url", data=config_defaults),
+        skill_role_name=role_name,
+        skill_role_name_provided=bool(role_name),
+        websearch_apikey=config_default_str(
+            "websearch-apikey",
+            data=config_defaults,
+        ),
+        image_url=config_default_str("image-url", data=config_defaults),
+        enable_snapshot=bool(
+            config_default_bool("enable-snapshot", data=config_defaults)
+        ),
+        network_enable_public=enable_public if enable_public is not None else True,
+        network_enable_private=bool(enable_private),
+        network_enable_shared_internet=bool(enable_shared_internet),
+        network_vpc_id=config_default_str("network-vpc-id", data=config_defaults),
+        network_subnet_ids=",".join(subnet_ids) if subnet_ids else None,
+    )
     save_tool_result(tool_type, result)
     tool_id = _get_string_value(result, "ToolId", "tool_id")
     if not tool_id:
@@ -456,12 +527,14 @@ def resolve_sandbox_tool_id(
     *,
     tool_id: Optional[str],
     tool_type: str | SandboxToolType | None,
+    tool_name: Optional[str] = None,
     default_tool_id: object = None,
     client: AgentkitToolsClient,
     env_var_name: str,
 ) -> str:
     resolved_tool_id = resolve_existing_sandbox_tool_id(
         tool_id=tool_id,
+        tool_name=tool_name,
         tool_type=tool_type,
         default_tool_id=default_tool_id,
         client=client,
@@ -483,15 +556,29 @@ def resolve_existing_sandbox_tool_id(
     *,
     tool_id: Optional[str],
     tool_type: str | SandboxToolType | None,
+    tool_name: Optional[str] = None,
     default_tool_id: object = None,
     client: AgentkitToolsClient,
     env_var_name: str,
 ) -> str | None:
     explicit_tool_id = (tool_id or "").strip()
+    explicit_tool_name = (tool_name or "").strip()
+    if tool_name is not None and not explicit_tool_name:
+        error("--tool-name cannot be empty")
+    if explicit_tool_id and explicit_tool_name:
+        error("Specify only one of --tool-id or --tool-name.")
     if explicit_tool_id:
         return _validate_existing_tool_id(
             client,
             explicit_tool_id,
+            tool_type=tool_type,
+            save_result=True,
+        )
+    if explicit_tool_name:
+        resolved_tool_id = _resolve_tool_id_by_name(client, explicit_tool_name)
+        return _validate_existing_tool_id(
+            client,
+            resolved_tool_id,
             tool_type=tool_type,
             save_result=True,
         )

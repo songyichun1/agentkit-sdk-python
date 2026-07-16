@@ -21,6 +21,12 @@ from typing import Optional
 
 import typer
 
+from agentkit.toolkit.cli.sandbox.config_store import (
+    SandboxConfigError,
+    config_default_if_unprovided,
+    config_tool_identifier_defaults_if_unprovided,
+    configured_sandbox_config,
+)
 from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
     ensure_sandbox_session_with_status,
@@ -37,17 +43,20 @@ def _resolve_web_session(
     *,
     session_id: str,
     tool_id: Optional[str],
+    tool_name: Optional[str],
 ) -> tuple[dict[str, object], bool]:
     return ensure_sandbox_session_with_status(
         session_id=session_id,
         tool_id=tool_id,
+        tool_name=tool_name,
         tool_type=SandboxToolType.CODE_ENV.value,
     )
 
 
 def web_command(
-    session_id: str = typer.Option(
-        ...,
+    ctx: typer.Context,
+    session_id: Optional[str] = typer.Option(
+        None,
         "--session-id",
         "--sid",
         "-s",
@@ -59,18 +68,36 @@ def web_command(
         "--tool_id",
         help=f"Sandbox tool ID. Defaults to {SANDBOX_TOOL_ID_ENV}.",
     ),
+    tool_name: Optional[str] = typer.Option(
+        None,
+        "--tool-name",
+        "--tool_name",
+        help="Sandbox tool name. Resolved with ListTools(Name=...).",
+    ),
 ) -> None:
     """Return the browser URL for a sandbox session."""
     try:
+        config_defaults = configured_sandbox_config()
+        session_id = config_default_if_unprovided(
+            ctx, "session_id", "session-id", session_id, data=config_defaults
+        )
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
+            ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
+        )
+        if not session_id:
+            error("Missing option '--session-id'.")
         session, is_new = _resolve_web_session(
             session_id=session_id,
             tool_id=tool_id,
+            tool_name=tool_name,
         )
         url = build_web_url(session.get("endpoint"))
         if not webbrowser.open(url):
             error("Failed to open browser")
     except typer.Exit:
         raise
+    except SandboxConfigError as exc:
+        error(str(exc))
     except Exception as exc:
         error(str(exc))
 

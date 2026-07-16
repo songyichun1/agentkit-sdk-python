@@ -32,6 +32,20 @@ def _clear_cloud_provider_env(monkeypatch):
     monkeypatch.delenv("CLOUD_PROVIDER", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _use_local_sandbox_config(monkeypatch, tmp_path):
+    import agentkit.toolkit.cli.sandbox.config_store as config_store
+
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    legacy_path = tmp_path / ".agentkit" / "sandbox" / "sandbox.yaml"
+    monkeypatch.setattr(config_store, "get_sandbox_config_path", lambda: config_path)
+    monkeypatch.setattr(
+        config_store,
+        "get_legacy_sandbox_config_path",
+        lambda: legacy_path,
+    )
+
+
 class _FakeCreateSessionResponse:
     user_session_id = "user-session-from-api"
     session_id = "session-from-api"
@@ -144,6 +158,16 @@ class _FakeListToolsResponse:
         self.tools = [] if tools is None else tools
 
 
+class _FakeDeleteToolResponse:
+    def __init__(self, tool_id="tool-deleted"):
+        self.tool_id = tool_id
+
+
+class _FakeDeleteSessionResponse:
+    def __init__(self, session_id="instance-deleted"):
+        self.session_id = session_id
+
+
 class _FakeToolsClient:
     last_request = None
     last_get_request = None
@@ -152,6 +176,8 @@ class _FakeToolsClient:
     last_list_sessions_request = None
     last_list_snapshots_request = None
     last_resume_snapshot_request = None
+    last_delete_tool_request = None
+    last_delete_session_request = None
     list_sessions_requests = []
     response = _FakeCreateSessionResponse()
     get_response = _FakeGetSessionResponse()
@@ -160,9 +186,13 @@ class _FakeToolsClient:
     list_sessions_responses = [_FakeListSessionsResponse()]
     list_snapshots_response = _FakeListSessionSnapshotsResponse()
     resume_snapshot_response = _FakeResumeSessionFromSnapshotResponse()
+    delete_tool_response = _FakeDeleteToolResponse()
+    delete_session_response = _FakeDeleteSessionResponse()
     create_error = None
     get_error = None
     get_tool_error = None
+    delete_tool_error = None
+    delete_session_error = None
     resume_snapshot_error = None
     create_call_count = 0
     get_call_count = 0
@@ -171,6 +201,8 @@ class _FakeToolsClient:
     list_sessions_call_count = 0
     list_snapshots_call_count = 0
     resume_snapshot_call_count = 0
+    delete_tool_call_count = 0
+    delete_session_call_count = 0
 
     def create_session(self, request):
         _FakeToolsClient.last_request = request
@@ -224,6 +256,20 @@ class _FakeToolsClient:
             raise _FakeToolsClient.resume_snapshot_error
         return _FakeToolsClient.resume_snapshot_response
 
+    def delete_tool(self, request):
+        _FakeToolsClient.last_delete_tool_request = request
+        _FakeToolsClient.delete_tool_call_count += 1
+        if _FakeToolsClient.delete_tool_error:
+            raise _FakeToolsClient.delete_tool_error
+        return _FakeToolsClient.delete_tool_response
+
+    def delete_session(self, request):
+        _FakeToolsClient.last_delete_session_request = request
+        _FakeToolsClient.delete_session_call_count += 1
+        if _FakeToolsClient.delete_session_error:
+            raise _FakeToolsClient.delete_session_error
+        return _FakeToolsClient.delete_session_response
+
 
 @pytest.fixture(autouse=True)
 def _reset_fake_client():
@@ -234,6 +280,8 @@ def _reset_fake_client():
     _FakeToolsClient.last_list_sessions_request = None
     _FakeToolsClient.last_list_snapshots_request = None
     _FakeToolsClient.last_resume_snapshot_request = None
+    _FakeToolsClient.last_delete_tool_request = None
+    _FakeToolsClient.last_delete_session_request = None
     _FakeToolsClient.list_sessions_requests = []
     _FakeToolsClient.response = _FakeCreateSessionResponse()
     _FakeToolsClient.get_response = _FakeGetSessionResponse()
@@ -242,9 +290,13 @@ def _reset_fake_client():
     _FakeToolsClient.list_sessions_responses = [_FakeListSessionsResponse()]
     _FakeToolsClient.list_snapshots_response = _FakeListSessionSnapshotsResponse()
     _FakeToolsClient.resume_snapshot_response = _FakeResumeSessionFromSnapshotResponse()
+    _FakeToolsClient.delete_tool_response = _FakeDeleteToolResponse()
+    _FakeToolsClient.delete_session_response = _FakeDeleteSessionResponse()
     _FakeToolsClient.create_error = None
     _FakeToolsClient.get_error = None
     _FakeToolsClient.get_tool_error = None
+    _FakeToolsClient.delete_tool_error = None
+    _FakeToolsClient.delete_session_error = None
     _FakeToolsClient.resume_snapshot_error = None
     _FakeToolsClient.create_call_count = 0
     _FakeToolsClient.get_call_count = 0
@@ -253,6 +305,8 @@ def _reset_fake_client():
     _FakeToolsClient.list_sessions_call_count = 0
     _FakeToolsClient.list_snapshots_call_count = 0
     _FakeToolsClient.resume_snapshot_call_count = 0
+    _FakeToolsClient.delete_tool_call_count = 0
+    _FakeToolsClient.delete_session_call_count = 0
 
 
 def _patch_store_path(monkeypatch, tmp_path):
@@ -276,6 +330,84 @@ def _write_session_store(store_path, records):
     store_path.write_text(
         json.dumps(records, indent=2),
         encoding="utf-8",
+    )
+
+
+def _write_auth_profile(
+    monkeypatch,
+    tmp_path,
+    *,
+    name="agentkit-cli-2107625663.tos-cn-beijing.volces.com",
+    active=True,
+    issuer=(
+        "https://userpool-5513b734-2672-4dce-80b5-47667033bc60"
+        ".userpool.auth.id.cn-beijing.volces.com"
+    ),
+    client_id="5cf70436-5191-42d0-8260-b888ee1d0fe3",
+    role_trn="trn:iam::2107625663:role/agentkit_cli_role",
+):
+    monkeypatch.setenv("AGENTKIT_HOME", str(tmp_path / "agentkit-home"))
+    from agentkit.auth.profile import AuthProfile, save_profile, set_active_profile
+
+    profile = AuthProfile(
+        name=name,
+        issuer=issuer,
+        client_id=client_id,
+        role_trn=role_trn,
+        provider_trn="trn:iam::2107625663:oidc-provider/sandbox_cli_oidc",
+        region="cn-beijing",
+        address=f"https://{name}" if "://" not in name else name,
+    )
+    save_profile(profile)
+    if active:
+        set_active_profile(name)
+    return profile
+
+
+def _expected_session_store(tool_id, session_id, result):
+    return {tool_id: {session_id: result}}
+
+
+def test_session_store_migrates_flat_records_to_tool_groups(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.sandbox_client as sandbox_client
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    flat_result = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com",
+        "terminal_shell_id": "shell-legacy",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": flat_result}, indent=2),
+        encoding="utf-8",
+    )
+
+    assert sandbox_client.find_session_result("tool-1", "user-1") == {
+        **flat_result,
+        "terminal_shell_id": ["shell-legacy"],
+    }
+
+    updated_result = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-new",
+        "endpoint": "https://new.example.com",
+    }
+    sandbox_client.save_session_result(updated_result)
+
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    assert stored == _expected_session_store(
+        "tool-1",
+        "user-1",
+        {
+            **updated_result,
+            "terminal_shell_id": ["shell-legacy"],
+        },
     )
 
 
@@ -378,9 +510,9 @@ def test_ensure_sandbox_session_uses_env_defaults(monkeypatch, tmp_path) -> None
         "instance_id": "session-from-api",
         "endpoint": "https://sandbox.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {
-        "user-session-from-api": result
-    }
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-env", "user-session-from-api", result)
+    )
 
     request = _FakeToolsClient.last_request
     assert request.tool_id == "tool-env"
@@ -1059,6 +1191,39 @@ def test_ensure_sandbox_session_options_override_env(monkeypatch, tmp_path) -> N
     assert request.user_session_id == "user-cli"
 
 
+def test_ensure_sandbox_session_tool_name_overrides_env(monkeypatch, tmp_path) -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.setenv("AGENTKIT_SANDBOX_TOOL_ID", "tool-env")
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
+    _FakeToolsClient.list_response = _FakeListToolsResponse(
+        [_FakeListTool(tool_id="tool-from-name", name="demo-tool", status="Ready")]
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tool_id="tool-from-name",
+        name="demo-tool",
+        status="Ready",
+    )
+
+    result = session_create.ensure_sandbox_session(
+        session_id="user-name",
+        tool_name="demo-tool",
+    )
+
+    assert result["tool_id"] == "tool-from-name"
+    assert [
+        (item.name, item.values) for item in _FakeToolsClient.last_list_request.filters
+    ] == [("Name", ["demo-tool"])]
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-from-name"
+    assert _FakeToolsClient.last_request.tool_id == "tool-from-name"
+
+
 def test_ensure_sandbox_session_passes_envs_to_create_session(
     monkeypatch,
     tmp_path,
@@ -1377,9 +1542,9 @@ def test_build_model_envs_infers_byteplus_provider_from_builtin_model_base_url(
 
     assert [(item.key, item.value) for item in envs] == [
         ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "byteplus_coding_plan"),
-        ("OPENCODE_MODEL", "deepseek-v4-flash"),
-        ("CODEX_MODEL", "deepseek-v4-flash"),
-        ("ANTHROPIC_MODEL", "deepseek-v4-flash"),
+        ("OPENCODE_MODEL", "dola-seed-2.0-pro"),
+        ("CODEX_MODEL", "dola-seed-2.0-pro"),
+        ("ANTHROPIC_MODEL", "dola-seed-2.0-pro"),
         (
             "OPENCODE_BASE_URL",
             "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
@@ -1551,7 +1716,189 @@ def test_ensure_sandbox_session_confirms_create_start_fail_by_user_session_id(
         "instance_id": "confirmed-instance",
         "endpoint": "https://confirmed.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"user-cli": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "user-cli", result)
+    )
+
+
+def test_sandbox_delete_requires_tool_id_or_tool_name(monkeypatch) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_delete as cli_delete
+
+    monkeypatch.setattr(
+        cli_delete,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+
+    result = runner.invoke(app, ["sandbox", "delete", "--force"])
+
+    assert result.exit_code == 1
+    assert "Specify exactly one of --tool-id or --tool-name" in result.output
+    assert _FakeToolsClient.delete_tool_call_count == 0
+    assert _FakeToolsClient.delete_session_call_count == 0
+
+
+def test_sandbox_delete_tool_by_id(monkeypatch) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_delete as cli_delete
+
+    monkeypatch.setattr(
+        cli_delete,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tool_id="tool-cli",
+        name="delete-me",
+    )
+    _FakeToolsClient.delete_tool_response = _FakeDeleteToolResponse("tool-cli")
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "delete", "--tool-id", "tool-cli", "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeToolsClient.get_tool_call_count == 1
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-cli"
+    assert _FakeToolsClient.delete_tool_call_count == 1
+    assert _FakeToolsClient.last_delete_tool_request.tool_id == "tool-cli"
+    assert "ToolId: tool-cli" in result.output
+
+
+def test_sandbox_delete_tool_by_name_resolves_tool_id(monkeypatch) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_delete as cli_delete
+
+    monkeypatch.setattr(
+        cli_delete,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_response = _FakeListToolsResponse(
+        [
+            _FakeListTool(
+                tool_id="tool-from-name",
+                name="demo-tool",
+                status="Ready",
+            )
+        ]
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tool_id="tool-from-name",
+        name="demo-tool",
+    )
+    _FakeToolsClient.delete_tool_response = _FakeDeleteToolResponse("tool-from-name")
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "delete", "--tool-name", "demo-tool", "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeToolsClient.list_call_count == 1
+    assert [
+        (item.name, item.values) for item in _FakeToolsClient.last_list_request.filters
+    ] == [("Name", ["demo-tool"])]
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-from-name"
+    assert _FakeToolsClient.last_delete_tool_request.tool_id == "tool-from-name"
+
+
+def test_sandbox_delete_session_uses_instance_id_and_clears_cache(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_delete as cli_delete
+
+    monkeypatch.setattr(
+        cli_delete,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    cached_result = {
+        "session_id": "user-cli",
+        "tool_id": "tool-cli",
+        "instance_id": "old-instance",
+        "endpoint": "https://old.example.com",
+    }
+    _write_session_store(
+        store_path,
+        _expected_session_store("tool-cli", "user-cli", cached_result),
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(tool_id="tool-cli")
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-cli",
+                    session_id="instance-cli",
+                    endpoint="https://sandbox.example.com",
+                )
+            ]
+        )
+    ]
+    _FakeToolsClient.delete_session_response = _FakeDeleteSessionResponse(
+        "instance-cli"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "delete",
+            "--tool-id",
+            "tool-cli",
+            "--session-id",
+            "user-cli",
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeToolsClient.get_tool_call_count == 0
+    assert _FakeToolsClient.list_sessions_call_count == 1
+    assert [
+        (item.name, item.values)
+        for item in _FakeToolsClient.last_list_sessions_request.filters
+    ] == [("UserSessionId", ["user-cli"])]
+    assert _FakeToolsClient.last_delete_session_request.tool_id == "tool-cli"
+    assert _FakeToolsClient.last_delete_session_request.session_id == "instance-cli"
+    assert json.loads(store_path.read_text(encoding="utf-8")) == {}
+
+
+def test_sandbox_delete_session_not_found(monkeypatch) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_delete as cli_delete
+
+    monkeypatch.setattr(
+        cli_delete,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(tool_id="tool-cli")
+    _FakeToolsClient.list_sessions_responses = [_FakeListSessionsResponse()]
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "delete",
+            "--tool-id",
+            "tool-cli",
+            "--session-id",
+            "missing-session",
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Sandbox session not found: missing-session under tool tool-cli" in (
+        result.output
+    )
+    assert _FakeToolsClient.delete_session_call_count == 0
 
 
 def test_ensure_sandbox_session_waits_for_ready_after_create_start_fail(
@@ -1720,8 +2067,8 @@ def test_sandbox_command_group_is_registered() -> None:
     assert result.exit_code == 0
     assert "create" in result.output
     assert "exec" in result.output
-    assert "get" in result.output
     assert "invoke" in result.output
+    assert "list" in result.output
     assert "mount" in result.output
     assert "shell" in result.output
     assert "web" in result.output
@@ -1730,7 +2077,7 @@ def test_sandbox_command_group_is_registered() -> None:
 @pytest.mark.parametrize(
     "args",
     [
-        ["sandbox", "get", "--help"],
+        ["sandbox", "list", "--help"],
         ["sandbox", "shell", "--help"],
         ["sandbox", "web", "--help"],
         ["sandbox", "exec", "--help"],
@@ -2201,25 +2548,14 @@ def test_sandbox_commands_are_not_registered_at_top_level() -> None:
         assert "No such command" in result.output
 
 
-def test_cli_mount_uses_stored_session_tool_and_opens_tosbrowser(
+def test_cli_mount_uses_explicit_tool_id_and_active_profile(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    _write_session_store(
-        store_path,
-        {
-            "session-cli": {
-                "session_id": "session-cli",
-                "tool_id": "tool-from-session",
-                "instance_id": "instance-cli",
-                "endpoint": "https://sandbox.example.com",
-            }
-        },
-    )
+    _write_auth_profile(monkeypatch, tmp_path)
     _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
         tos_mount_config=_FakeToolTosMountConfig(
             [_FakeToolMountPoint(bucket_name="sandbox-bucket")]
@@ -2230,45 +2566,12 @@ def test_cli_mount_uses_stored_session_tool_and_opens_tosbrowser(
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
-    discovery_path = tmp_path / ".agentkit" / "sandbox" / "agentkit-cli"
+    captured = {}
     monkeypatch.setattr(
         cli_mount,
-        "_get_discovery_store_path",
-        lambda: discovery_path,
+        "_open_tosbrowser",
+        lambda command: captured.setdefault("command", command),
     )
-    discovery = {
-        "issuer": (
-            "https://userpool-5513b734-2672-4dce-80b5-47667033bc60"
-            ".userpool.auth.id.cn-beijing.volces.com"
-        ),
-        "client_id": "5cf70436-5191-42d0-8260-b888ee1d0fe3",
-        "role_trn": "trn:iam::2107625663:role/agentkit_cli_role",
-        "provider_trn": "trn:iam::2107625663:oidc-provider/sandbox_cli_oidc",
-        "region": "cn-beijing",
-        "transport": "sts",
-        "scope": "openid profile email offline_access",
-    }
-    captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(discovery).encode("utf-8")
-
-    def fake_urlopen(url, *args, **kwargs):
-        captured["url"] = url
-        return FakeResponse()
-
-    def fake_open(command):
-        captured["command"] = command
-
-    monkeypatch.setattr(cli_mount, "urlopen", fake_urlopen)
-    monkeypatch.setattr(cli_mount, "_open_tosbrowser", fake_open)
 
     result = runner.invoke(
         app,
@@ -2277,14 +2580,14 @@ def test_cli_mount_uses_stored_session_tool_and_opens_tosbrowser(
             "mount",
             "--session-id",
             "session-cli",
-            "--oauth-url",
-            "https://example.com/oauth",
+            "--tool-id",
+            "tool-cli",
         ],
     )
 
     expected_command = (
         "tosbrowser://open?"
-        "path=tos://sandbox-bucket/sandbox-session/tool-tool-from-session/"
+        "path=tos://sandbox-bucket/sandbox-session/tool-tool-cli/"
         "session-session-cli/"
         "&type=oAuthLogin"
         "&role=trn:iam::2107625663:role/agentkit_cli_role"
@@ -2292,35 +2595,26 @@ def test_cli_mount_uses_stored_session_tool_and_opens_tosbrowser(
         "&clientId=5cf70436-5191-42d0-8260-b888ee1d0fe3"
     )
     assert result.exit_code == 0
-    assert captured["url"] == ("https://example.com/oauth/.well-known/agentkit-cli")
-    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-from-session"
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-cli"
+    assert _FakeToolsClient.list_sessions_call_count == 0
     assert captured["command"] == expected_command
-    assert json.loads(discovery_path.read_text(encoding="utf-8")) == discovery
     assert json.loads(result.output) == {
-        "tool_id": "tool-from-session",
+        "tool_id": "tool-cli",
         "session_id": "session-cli",
         "command": expected_command,
     }
 
 
-def test_cli_mount_uses_tool_tos_bucket_when_option_omitted(
+def test_cli_mount_resolves_tool_name(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    _write_session_store(
-        store_path,
-        {
-            "session-cli": {
-                "session_id": "session-cli",
-                "tool_id": "tool-from-session",
-                "instance_id": "instance-cli",
-                "endpoint": "https://sandbox.example.com",
-            }
-        },
+    _write_auth_profile(monkeypatch, tmp_path)
+    _FakeToolsClient.list_response = _FakeListToolsResponse(
+        [_FakeListTool(tool_id="tool-from-name", name="named-tool")]
     )
     _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
         tos_mount_config=_FakeToolTosMountConfig(
@@ -2332,32 +2626,7 @@ def test_cli_mount_uses_tool_tos_bucket_when_option_omitted(
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
-    monkeypatch.setattr(
-        cli_mount,
-        "_get_discovery_store_path",
-        lambda: tmp_path / ".agentkit" / "sandbox" / "agentkit-cli",
-    )
-    discovery = {
-        "issuer": (
-            "https://userpool-5513b734-2672-4dce-80b5-47667033bc60"
-            ".userpool.auth.id.cn-beijing.volces.com"
-        ),
-        "client_id": "client-id",
-        "role_trn": "role-trn",
-    }
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(discovery).encode("utf-8")
-
     opened = {}
-    monkeypatch.setattr(cli_mount, "urlopen", lambda _url, *a, **k: FakeResponse())
     monkeypatch.setattr(
         cli_mount,
         "_open_tosbrowser",
@@ -2371,36 +2640,27 @@ def test_cli_mount_uses_tool_tos_bucket_when_option_omitted(
             "mount",
             "--session-id",
             "session-cli",
-            "--oauth-url",
-            "https://example.com/oauth",
+            "--tool-name",
+            "named-tool",
         ],
     )
 
     assert result.exit_code == 0
-    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-from-session"
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-from-name"
     assert "path=tos://bucket-from-tool/" in opened["command"]
-    assert json.loads(result.output)["tool_id"] == "tool-from-session"
+    assert json.loads(result.output)["tool_id"] == "tool-from-name"
 
 
-def test_cli_mount_uses_latest_auth_session_when_oauth_url_omitted(
+def test_cli_mount_uses_configured_tool_id_when_option_omitted(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox.config_store import write_sandbox_config
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    _write_session_store(
-        store_path,
-        {
-            "session-cli": {
-                "session_id": "session-cli",
-                "tool_id": "tool-from-session",
-                "instance_id": "instance-cli",
-                "endpoint": "https://sandbox.example.com",
-            }
-        },
-    )
+    _write_auth_profile(monkeypatch, tmp_path)
+    write_sandbox_config({"session": {"tool_id": "tool-config"}})
     _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
         tos_mount_config=_FakeToolTosMountConfig(
             [_FakeToolMountPoint(bucket_name="bucket-from-tool")]
@@ -2411,55 +2671,7 @@ def test_cli_mount_uses_latest_auth_session_when_oauth_url_omitted(
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
-    monkeypatch.setattr(
-        cli_mount,
-        "_get_discovery_store_path",
-        lambda: tmp_path / ".agentkit" / "sandbox" / "agentkit-cli",
-    )
-
-    auth_sessions_dir = tmp_path / "auth" / "sessions"
-    auth_sessions_dir.mkdir(parents=True)
-    old_session = (
-        auth_sessions_dir / "agentkit-cli-1111111111.tos-cn-beijing.volces.com.json"
-    )
-    latest_session = (
-        auth_sessions_dir / "agentkit-cli-2107625663.tos-cn-beijing.volces.com.json"
-    )
-    old_session.write_text("{}", encoding="utf-8")
-    latest_session.write_text("{}", encoding="utf-8")
-    os.utime(old_session, (1, 1))
-    os.utime(latest_session, (2, 2))
-    monkeypatch.setattr(
-        cli_mount,
-        "_get_auth_sessions_dir",
-        lambda: auth_sessions_dir,
-    )
-
-    discovery = {
-        "issuer": (
-            "https://userpool-5513b734-2672-4dce-80b5-47667033bc60"
-            ".userpool.auth.id.cn-beijing.volces.com"
-        ),
-        "client_id": "client-id",
-        "role_trn": "role-trn",
-    }
     captured = {}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(discovery).encode("utf-8")
-
-    def fake_urlopen(url, *args, **kwargs):
-        captured["url"] = url
-        return FakeResponse()
-
-    monkeypatch.setattr(cli_mount, "urlopen", fake_urlopen)
     monkeypatch.setattr(
         cli_mount,
         "_open_tosbrowser",
@@ -2477,35 +2689,51 @@ def test_cli_mount_uses_latest_auth_session_when_oauth_url_omitted(
     )
 
     assert result.exit_code == 0
-    assert captured["url"] == (
-        "https://agentkit-cli-2107625663.tos-cn-beijing.volces.com/"
-        ".well-known/agentkit-cli"
-    )
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-config"
     assert "path=tos://bucket-from-tool/" in captured["command"]
-    assert json.loads(result.output)["tool_id"] == "tool-from-session"
+    assert json.loads(result.output)["tool_id"] == "tool-config"
 
 
-def test_cli_mount_errors_when_latest_auth_session_name_is_invalid(
+def test_cli_mount_uses_configured_tool_name_when_tool_id_omitted(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox.config_store import write_sandbox_config
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    auth_sessions_dir = tmp_path / "auth" / "sessions"
-    auth_sessions_dir.mkdir(parents=True)
-    valid_session = (
-        auth_sessions_dir / "agentkit-cli-1111111111.tos-cn-beijing.volces.com.json"
+    _write_auth_profile(monkeypatch, tmp_path)
+    write_sandbox_config(
+        {
+            "tool": {"type": "SkillEnv"},
+            "session": {"tool_name": "configured-tool"},
+        }
     )
-    invalid_session = auth_sessions_dir / "default.json"
-    valid_session.write_text("{}", encoding="utf-8")
-    invalid_session.write_text("{}", encoding="utf-8")
-    os.utime(valid_session, (1, 1))
-    os.utime(invalid_session, (2, 2))
+    _FakeToolsClient.list_response = _FakeListToolsResponse(
+        [
+            _FakeListTool(
+                tool_id="tool-from-config-name",
+                tool_type="SkillEnv",
+                name="configured-tool",
+            )
+        ]
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tool_type="SkillEnv",
+        tos_mount_config=_FakeToolTosMountConfig(
+            [_FakeToolMountPoint(bucket_name="bucket-from-tool")]
+        ),
+    )
     monkeypatch.setattr(
         cli_mount,
-        "_get_auth_sessions_dir",
-        lambda: auth_sessions_dir,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli_mount,
+        "_open_tosbrowser",
+        lambda command: captured.setdefault("command", command),
     )
 
     result = runner.invoke(
@@ -2518,23 +2746,51 @@ def test_cli_mount_errors_when_latest_auth_session_name_is_invalid(
         ],
     )
 
-    assert result.exit_code == 1
-    assert "Invalid auth session filename for sandbox mount" in result.output
-    assert "Expected agentkit-cli-*volces.com.json" in result.output
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-from-config-name"
+    assert "tool-tool-from-config-name/session-session-cli" in captured["command"]
+    assert json.loads(result.output)["tool_id"] == "tool-from-config-name"
 
 
-def test_cli_mount_errors_when_auth_session_directory_is_missing(
+def test_cli_mount_oauth_url_selects_local_profile_without_network_discovery(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    auth_sessions_dir = tmp_path / "missing" / "sessions"
+    _write_auth_profile(
+        monkeypatch,
+        tmp_path,
+        name="active.example.com",
+        issuer="https://userpool-active.userpool.auth.id.cn-beijing.volces.com",
+        client_id="active-client",
+        role_trn="active-role",
+    )
+    _write_auth_profile(
+        monkeypatch,
+        tmp_path,
+        active=False,
+        name="agentkit-cli-2107625663.tos-cn-beijing.volces.com",
+        issuer="https://userpool-urlprofile.userpool.auth.id.cn-beijing.volces.com",
+        client_id="url-client",
+        role_trn="url-role",
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tos_mount_config=_FakeToolTosMountConfig(
+            [_FakeToolMountPoint(bucket_name="bucket-from-tool")]
+        )
+    )
     monkeypatch.setattr(
         cli_mount,
-        "_get_auth_sessions_dir",
-        lambda: auth_sessions_dir,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        cli_mount,
+        "_open_tosbrowser",
+        lambda command: captured.setdefault("command", command),
     )
 
     result = runner.invoke(
@@ -2544,11 +2800,17 @@ def test_cli_mount_errors_when_auth_session_directory_is_missing(
             "mount",
             "--session-id",
             "session-cli",
+            "--tool-id",
+            "tool-cli",
+            "--oauth-url",
+            "https://agentkit-cli-2107625663.tos-cn-beijing.volces.com",
         ],
     )
 
-    assert result.exit_code == 1
-    assert f"Auth session directory not found: {auth_sessions_dir}" in result.output
+    assert result.exit_code == 0
+    assert "&role=url-role" in captured["command"]
+    assert "&userPool=urlprofile" in captured["command"]
+    assert "&clientId=url-client" in captured["command"]
 
 
 def test_cli_mount_errors_when_tool_has_no_tos_mount(
@@ -2558,18 +2820,7 @@ def test_cli_mount_errors_when_tool_has_no_tos_mount(
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    _write_session_store(
-        store_path,
-        {
-            "session-cli": {
-                "session_id": "session-cli",
-                "tool_id": "tool-from-session",
-                "instance_id": "instance-cli",
-                "endpoint": "https://sandbox.example.com",
-            }
-        },
-    )
+    _write_auth_profile(monkeypatch, tmp_path)
     _FakeToolsClient.get_tool_response = _FakeGetToolResponse(tos_mount_config=None)
     monkeypatch.setattr(
         cli_mount,
@@ -2584,90 +2835,28 @@ def test_cli_mount_errors_when_tool_has_no_tos_mount(
             "mount",
             "--session-id",
             "session-cli",
-            "--oauth-url",
-            "https://example.com/oauth",
+            "--tool-id",
+            "tool-cli",
         ],
     )
 
     assert result.exit_code == 1
-    assert "当前工具未挂载 Tos: tool-from-session" in result.output
+    assert "当前工具未挂载 Tos: tool-cli" in result.output
 
 
-def test_cli_mount_syncs_current_tool_sessions_when_session_not_cached(
+def test_cli_mount_errors_when_tool_id_cannot_be_resolved(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    _write_session_store(store_path, {})
-    tool_store_path = _patch_tool_store_path(monkeypatch, tmp_path)
-    tool_store_path.parent.mkdir(parents=True, exist_ok=True)
-    tool_store_path.write_text(
-        json.dumps(
-            {
-                "CodeEnv": {
-                    "ToolId": "tool-cache",
-                    "ToolType": "CodeEnv",
-                    "Name": "cached-tool",
-                    "Status": "Ready",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
-        tos_mount_config=_FakeToolTosMountConfig(
-            [_FakeToolMountPoint(bucket_name="sandbox-bucket")]
-        )
-    )
-    _FakeToolsClient.list_sessions_responses = [
-        _FakeListSessionsResponse(
-            [
-                _FakeSessionInfo(
-                    user_session_id="session-cli",
-                    session_id="instance-cli",
-                    endpoint="https://sandbox.example.com",
-                )
-            ]
-        )
-    ]
+    _patch_tool_store_path(monkeypatch, tmp_path)
+    _FakeToolsClient.list_response = _FakeListToolsResponse()
     monkeypatch.setattr(
         cli_mount,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
-    )
-    monkeypatch.setattr(
-        cli_mount,
-        "_get_discovery_store_path",
-        lambda: tmp_path / ".agentkit" / "sandbox" / "agentkit-cli",
-    )
-    discovery = {
-        "issuer": (
-            "https://userpool-5513b734-2672-4dce-80b5-47667033bc60"
-            ".userpool.auth.id.cn-beijing.volces.com"
-        ),
-        "client_id": "client-id",
-        "role_trn": "role-trn",
-    }
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(discovery).encode("utf-8")
-
-    opened = {}
-    monkeypatch.setattr(cli_mount, "urlopen", lambda _url, *a, **k: FakeResponse())
-    monkeypatch.setattr(
-        cli_mount,
-        "_open_tosbrowser",
-        lambda command: opened.setdefault("command", command),
     )
 
     result = runner.invoke(
@@ -2677,22 +2866,11 @@ def test_cli_mount_syncs_current_tool_sessions_when_session_not_cached(
             "mount",
             "--session-id",
             "session-cli",
-            "--oauth-url",
-            "https://example.com/oauth",
         ],
     )
 
-    assert result.exit_code == 0
-    assert _FakeToolsClient.list_sessions_call_count == 1
-    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-cache"
-    assert "tool-tool-cache/session-session-cli" in opened["command"]
-    assert json.loads(result.output)["tool_id"] == "tool-cache"
-    assert json.loads(store_path.read_text(encoding="utf-8"))["session-cli"] == {
-        "session_id": "session-cli",
-        "tool_id": "tool-cache",
-        "instance_id": "instance-cli",
-        "endpoint": "https://sandbox.example.com",
-    }
+    assert result.exit_code == 1
+    assert "Sandbox tool ID is required" in result.output
 
 
 def test_cli_mount_open_tosbrowser_passes_url_as_single_argument(
@@ -2729,18 +2907,7 @@ def test_cli_mount_returns_install_hint_when_tosbrowser_is_missing(
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    _write_session_store(
-        store_path,
-        {
-            "session-cli": {
-                "session_id": "session-cli",
-                "tool_id": "tool-from-session",
-                "instance_id": "instance-cli",
-                "endpoint": "https://sandbox.example.com",
-            }
-        },
-    )
+    _write_auth_profile(monkeypatch, tmp_path)
     _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
         tos_mount_config=_FakeToolTosMountConfig(
             [_FakeToolMountPoint(bucket_name="sandbox-bucket")]
@@ -2751,30 +2918,6 @@ def test_cli_mount_returns_install_hint_when_tosbrowser_is_missing(
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
-    monkeypatch.setattr(
-        cli_mount,
-        "_get_discovery_store_path",
-        lambda: tmp_path / ".agentkit" / "sandbox" / "agentkit-cli",
-    )
-    discovery = {
-        "issuer": (
-            "https://userpool-5513b734-2672-4dce-80b5-47667033bc60"
-            ".userpool.auth.id.cn-beijing.volces.com"
-        ),
-        "client_id": "client-id",
-        "role_trn": "role-trn",
-    }
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(discovery).encode("utf-8")
-
     original_error = (
         "No application knows how to open URL "
         "tosbrowser://open?path=tos://sandbox-bucket/"
@@ -2782,7 +2925,6 @@ def test_cli_mount_returns_install_hint_when_tosbrowser_is_missing(
         '"kLSApplicationNotFoundErr")'
     )
 
-    monkeypatch.setattr(cli_mount, "urlopen", lambda _url, *a, **k: FakeResponse())
     monkeypatch.setattr(
         cli_mount,
         "_open_tosbrowser",
@@ -2798,14 +2940,14 @@ def test_cli_mount_returns_install_hint_when_tosbrowser_is_missing(
             "mount",
             "--session-id",
             "session-cli",
-            "--oauth-url",
-            "https://example.com/oauth",
+            "--tool-id",
+            "tool-cli",
         ],
     )
 
     assert result.exit_code == 1
     output = json.loads(result.output)
-    assert output["tool_id"] == "tool-from-session"
+    assert output["tool_id"] == "tool-cli"
     assert output["session_id"] == "session-cli"
     assert output["error_msg"] == "Failed to open TosBrowser"
     assert output["original_error"] == original_error
@@ -2841,14 +2983,16 @@ def test_open_tosbrowser_detects_missing_tosbrowser_from_open_error(
     assert str(exc_info.value) == original_error
 
 
-def test_cli_mount_reports_missing_session_after_sync(monkeypatch, tmp_path) -> None:
+def test_cli_mount_reports_missing_active_profile(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
 
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    _write_session_store(store_path, {})
-    _patch_tool_store_path(monkeypatch, tmp_path)
-    _FakeToolsClient.list_response = _FakeListToolsResponse()
+    monkeypatch.setenv("AGENTKIT_HOME", str(tmp_path / "agentkit-home"))
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tos_mount_config=_FakeToolTosMountConfig(
+            [_FakeToolMountPoint(bucket_name="sandbox-bucket")]
+        )
+    )
     monkeypatch.setattr(
         cli_mount,
         "AgentkitToolsClient",
@@ -2862,17 +3006,13 @@ def test_cli_mount_reports_missing_session_after_sync(monkeypatch, tmp_path) -> 
             "mount",
             "--session-id",
             "session-cli",
-            "--oauth-url",
-            "https://example.com/oauth",
+            "--tool-id",
+            "tool-cli",
         ],
     )
 
     assert result.exit_code == 1
-    assert json.loads(result.output) == {
-        "tool_id": None,
-        "session_id": "session-cli",
-        "error_msg": "Sandbox session not found: session-cli",
-    }
+    assert "not logged in" in result.output
 
 
 def test_cli_mount_tos_bucket_option_is_disabled() -> None:
@@ -2882,7 +3022,11 @@ def test_cli_mount_tos_bucket_option_is_disabled() -> None:
 
     assert result.exit_code == 0
     assert "--tos-bucket" not in result.output
-    assert "--tool-id" not in result.output
+    assert "--tool-id" in result.output
+    assert "--tool-name" in result.output
+    assert "--tool_id" not in result.output
+    assert "--tool_name" not in result.output
+    assert "--oauth-url" in result.output
     assert "--tool-type" not in result.output
 
 
@@ -2921,6 +3065,7 @@ def test_ensure_sandbox_session_reuses_existing_remote_session(
 
     result = session_create.ensure_sandbox_session(
         session_id="same-user-session",
+        tool_id="tool-stored",
     )
 
     assert _FakeToolsClient.create_call_count == 0
@@ -2936,7 +3081,7 @@ def test_ensure_sandbox_session_reuses_existing_remote_session(
     }
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["same-user-session"] == result
+    assert stored["tool-stored"]["same-user-session"] == result
 
 
 def test_ensure_sandbox_session_syncs_missing_local_session_before_create(
@@ -2987,7 +3132,9 @@ def test_ensure_sandbox_session_syncs_missing_local_session_before_create(
         "instance_id": "remote-instance",
         "endpoint": "https://remote.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"remote-user": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "remote-user", result)
+    )
 
 
 def test_ensure_sandbox_session_without_snapshot_enabled_does_not_list_snapshots(
@@ -3064,7 +3211,9 @@ def test_ensure_sandbox_session_snapshot_tool_reuses_existing_remote_session(
         "instance_id": "instance-existing",
         "endpoint": "https://existing.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"user-cli": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "user-cli", result)
+    )
 
 
 def test_ensure_sandbox_session_snapshot_tool_creates_when_no_snapshot(
@@ -3154,7 +3303,7 @@ def test_ensure_sandbox_session_snapshot_tool_restores_first_snapshot(
     assert _FakeToolsClient.last_resume_snapshot_request.tool_id == "tool-cli"
     assert _FakeToolsClient.last_resume_snapshot_request.snapshot_id == "snapshot-first"
     assert _FakeToolsClient.last_resume_snapshot_request.ttl == 60
-    assert _FakeToolsClient.last_resume_snapshot_request.create_new_instance is True
+    assert _FakeToolsClient.last_resume_snapshot_request.create_new_instance is False
     assert _FakeToolsClient.last_get_request.tool_id == "tool-cli"
     assert _FakeToolsClient.last_get_request.session_id == "instance-restored"
     assert result == {
@@ -3163,7 +3312,9 @@ def test_ensure_sandbox_session_snapshot_tool_restores_first_snapshot(
         "instance_id": "instance-restored",
         "endpoint": "https://restored.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"user-cli": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "user-cli", result)
+    )
 
 
 def test_ensure_sandbox_session_recreates_when_remote_session_missing(
@@ -3188,7 +3339,7 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
             {
                 "same-user-session": {
                     "session_id": "same-user-session",
-                    "tool_id": "tool-stored",
+                    "tool_id": "tool-new",
                     "instance_id": "session-old",
                     "endpoint": "https://old.example.com",
                 }
@@ -3204,7 +3355,7 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
         tool_id="tool-new",
     )
 
-    assert _FakeToolsClient.get_call_count == 2
+    assert _FakeToolsClient.get_call_count == 1
     assert _FakeToolsClient.get_tool_call_count == 3
     assert _FakeToolsClient.create_call_count == 1
     assert _FakeToolsClient.list_sessions_call_count == 1
@@ -3213,14 +3364,14 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
     assert _FakeToolsClient.last_request.tool_id == "tool-new"
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert list(stored) == ["same-user-session"]
-    assert stored["same-user-session"] == {
+    assert list(stored) == ["tool-new"]
+    assert stored["tool-new"]["same-user-session"] == {
         "session_id": "same-user-session",
         "tool_id": "tool-new",
         "instance_id": "session-new",
         "endpoint": "https://new.example.com",
     }
-    assert result == stored["same-user-session"]
+    assert result == stored["tool-new"]["same-user-session"]
 
 
 def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
@@ -3277,6 +3428,7 @@ def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
 
     result = session_create.ensure_sandbox_session(
         session_id="same-user-session",
+        tool_id="tool-stored",
     )
 
     assert _FakeToolsClient.create_call_count == 0
@@ -3290,14 +3442,14 @@ def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
         "instance_id": "session-remote",
         "endpoint": "https://remote.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {
-        "same-user-session": result
-    }
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-stored", "same-user-session", result)
+    )
 
 
-def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
+def test_cli_list_returns_stored_session(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     stored_result = {
@@ -3306,18 +3458,12 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
         "instance_id": "session-1",
         "endpoint": "https://sandbox.example.com",
     }
-    remote_result = {
-        "session_id": "user-1",
-        "tool_id": "tool-1",
-        "instance_id": "remote-session-1",
-        "endpoint": "https://remote.example.com",
-    }
     store_path.write_text(
         json.dumps({"user-1": stored_result}, indent=2),
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3335,22 +3481,23 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "user-1"],
+        ["sandbox", "list", "--session-id", "user-1", "--tool-id", "tool-1"],
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == remote_result
+    assert json.loads(result.output) == stored_result
     assert json.loads(store_path.read_text(encoding="utf-8")) == {
-        "user-1": remote_result
+        "user-1": stored_result
     }
+    assert _FakeToolsClient.list_sessions_call_count == 0
 
 
-def test_cli_get_syncs_remote_sessions_with_pagination(
+def test_cli_list_with_tool_id_filters_local_sessions(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     store_path.write_text(
@@ -3380,7 +3527,7 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3406,59 +3553,69 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
         ),
     ]
 
-    result = runner.invoke(
-        app,
-        ["sandbox", "get", "--session-id", "user-2", "--tool-id", "tool-1"],
-    )
+    result = runner.invoke(app, ["sandbox", "list", "--tool-id", "tool-1"])
 
     assert result.exit_code == 0
     assert json.loads(result.output) == {
-        "session_id": "user-2",
-        "tool_id": "tool-1",
-        "instance_id": "instance-2",
-        "endpoint": "https://two.example.com",
-        "terminal_shell_id": ["shell-local"],
+        "tool-1": {
+            "stale-user": {
+                "session_id": "stale-user",
+                "tool_id": "tool-1",
+                "instance_id": "stale-instance",
+                "endpoint": "https://stale.example.com",
+            },
+            "user-2": {
+                "session_id": "user-2",
+                "tool_id": "tool-1",
+                "instance_id": "old-instance-2",
+                "endpoint": "https://old.example.com",
+                "terminal_shell_id": ["shell-local"],
+            },
+        }
     }
-    assert [
-        request.next_token for request in _FakeToolsClient.list_sessions_requests
-    ] == [None, "page-2"]
-    stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert "stale-user" not in stored
-    assert stored["other-user"]["tool_id"] == "other-tool"
-    assert stored["user-1"] == {
-        "session_id": "user-1",
-        "tool_id": "tool-1",
-        "instance_id": "instance-1",
-        "endpoint": "https://one.example.com",
-    }
-    assert stored["user-2"]["terminal_shell_id"] == ["shell-local"]
+    assert _FakeToolsClient.list_sessions_call_count == 0
+    assert _FakeToolsClient.list_sessions_requests == []
 
 
-def test_cli_get_ignores_remote_sessions_without_user_session_id(
+def test_cli_list_with_tool_name_resolves_and_filters_local_sessions(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
     store_path.write_text(
         json.dumps(
             {
-                "user-1": {
-                    "session_id": "user-1",
-                    "tool_id": "tool-1",
-                    "instance_id": "old-instance",
-                    "endpoint": "https://old.example.com",
-                }
+                "tool-1": {
+                    "user-1": {
+                        "session_id": "user-1",
+                        "tool_id": "tool-1",
+                        "instance_id": "old-instance",
+                        "endpoint": "https://old.example.com",
+                    }
+                },
+                "other-tool": {
+                    "other-user": {
+                        "session_id": "other-user",
+                        "tool_id": "other-tool",
+                        "instance_id": "other-instance",
+                        "endpoint": "https://other.example.com",
+                    }
+                },
             }
         ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_response = _FakeListToolsResponse(
+        [_FakeListTool(tool_id="tool-1", name="demo-tool")]
     )
     _FakeToolsClient.list_sessions_responses = [
         _FakeListSessionsResponse(
@@ -3484,29 +3641,35 @@ def test_cli_get_ignores_remote_sessions_without_user_session_id(
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "user-1", "--tool-id", "tool-1"],
+        ["sandbox", "list", "--tool-name", "demo-tool"],
     )
 
     assert result.exit_code == 0
-    stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert list(stored) == ["user-1"]
-    assert stored["user-1"] == {
-        "session_id": "user-1",
-        "tool_id": "tool-1",
-        "instance_id": "instance-1",
-        "endpoint": "https://one.example.com",
+    assert json.loads(result.output) == {
+        "tool-1": {
+            "user-1": {
+                "session_id": "user-1",
+                "tool_id": "tool-1",
+                "instance_id": "old-instance",
+                "endpoint": "https://old.example.com",
+            }
+        }
     }
-    assert json.loads(result.output) == stored["user-1"]
+    assert _FakeToolsClient.list_call_count == 1
+    assert _FakeToolsClient.get_tool_call_count == 1
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-1"
+    assert _FakeToolsClient.list_sessions_call_count == 0
 
 
-def test_cli_get_without_session_id_returns_all_synced_sessions(
+def test_cli_list_without_session_id_returns_all_local_sessions(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
     store_path.write_text(
         json.dumps(
             {
@@ -3521,7 +3684,7 @@ def test_cli_get_without_session_id_returns_all_synced_sessions(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3542,67 +3705,182 @@ def test_cli_get_without_session_id_returns_all_synced_sessions(
         )
     ]
 
-    result = runner.invoke(app, ["sandbox", "get", "--tool-id", "tool-1"])
+    result = runner.invoke(app, ["sandbox", "list"])
 
     assert result.exit_code == 0
     expected = {
-        "local-other": {
-            "session_id": "local-other",
-            "tool_id": "other-tool",
-            "instance_id": "local-instance",
-            "endpoint": "https://local.example.com",
-        },
-        "remote-user-1": {
-            "session_id": "remote-user-1",
-            "tool_id": "tool-1",
-            "instance_id": "remote-instance-1",
-            "endpoint": "https://one.example.com",
-        },
+        "other-tool": {
+            "local-other": {
+                "session_id": "local-other",
+                "tool_id": "other-tool",
+                "instance_id": "local-instance",
+                "endpoint": "https://local.example.com",
+            },
+        }
     }
     assert json.loads(result.output) == expected
-    assert json.loads(store_path.read_text(encoding="utf-8")) == expected
-    assert _FakeToolsClient.list_sessions_call_count == 1
+    assert _FakeToolsClient.list_call_count == 1
+    assert _FakeToolsClient.get_tool_call_count == 0
+    assert _FakeToolsClient.list_sessions_call_count == 0
 
 
-def test_cli_get_without_session_id_returns_empty_store(
+def test_cli_list_with_session_id_uses_configured_tool_id(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "session:",
+                "  tool_id: configured-tool",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    stored_result = {
+        "session_id": "test-shell",
+        "tool_id": "configured-tool",
+        "instance_id": "instance-shell",
+        "endpoint": "https://shell.example.com",
+    }
+    store_path.write_text(
+        json.dumps(
+            {
+                "configured-tool": {
+                    "test-shell": stored_result,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_list,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+
+    result = runner.invoke(app, ["sandbox", "list", "-s", "test-shell"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == stored_result
+    assert _FakeToolsClient.get_tool_call_count == 0
+    assert _FakeToolsClient.list_sessions_call_count == 0
+
+
+def test_cli_list_uses_configured_tool_id_without_session_id(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "session:",
+                "  id: configured-user",
+                "  tool_id: tool-1",
+                "tool:",
+                "  type: SkillEnv",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store_path.write_text(
+        json.dumps(
+            {
+                "tool-1": {
+                    "user-1": {
+                        "session_id": "user-1",
+                        "tool_id": "tool-1",
+                        "instance_id": "instance-1",
+                        "endpoint": "https://one.example.com",
+                    }
+                },
+                "tool-2": {
+                    "user-2": {
+                        "session_id": "user-2",
+                        "tool_id": "tool-2",
+                        "instance_id": "instance-2",
+                        "endpoint": "https://two.example.com",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_list,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+
+    result = runner.invoke(app, ["sandbox", "list"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "tool-1": {
+            "user-1": {
+                "session_id": "user-1",
+                "tool_id": "tool-1",
+                "instance_id": "instance-1",
+                "endpoint": "https://one.example.com",
+            }
+        }
+    }
+    assert _FakeToolsClient.list_call_count == 0
+    assert _FakeToolsClient.get_tool_call_count == 0
+    assert _FakeToolsClient.list_sessions_call_count == 0
+
+
+def test_cli_list_without_session_id_returns_empty_store(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     _patch_store_path(monkeypatch, tmp_path)
     _patch_tool_store_path(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
     _FakeToolsClient.list_response = _FakeListToolsResponse()
 
-    result = runner.invoke(app, ["sandbox", "get"])
+    result = runner.invoke(app, ["sandbox", "list"])
 
     assert result.exit_code == 0
     assert json.loads(result.output) == {}
     assert _FakeToolsClient.list_sessions_call_count == 0
 
 
-def test_cli_get_reports_missing_session(monkeypatch, tmp_path) -> None:
+def test_cli_list_reports_missing_session(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     _patch_tool_store_path(monkeypatch, tmp_path)
     store_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "missing-user"],
+        ["sandbox", "list", "--session-id", "missing-user"],
     )
 
     assert result.exit_code == 1
@@ -3613,17 +3891,17 @@ def test_cli_get_reports_missing_session(monkeypatch, tmp_path) -> None:
     }
 
 
-def test_cli_get_missing_session_includes_resolved_tool_id(
+def test_cli_list_missing_session_includes_resolved_tool_id(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     store_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3632,7 +3910,7 @@ def test_cli_get_missing_session_includes_resolved_tool_id(
         app,
         [
             "sandbox",
-            "get",
+            "list",
             "--session-id",
             "missing-user",
             "--tool-id",
@@ -3708,7 +3986,7 @@ def test_cli_web_returns_session_browser_url(monkeypatch, tmp_path) -> None:
     assert opened_urls == [json.loads(result.output)["url"]]
 
 
-def test_cli_web_uses_stored_tool_id_when_tool_id_omitted(
+def test_cli_web_uses_explicit_tool_id_with_stored_session(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -3746,7 +4024,10 @@ def test_cli_web_uses_stored_tool_id_when_tool_id_omitted(
         lambda url: opened_urls.append(url) or True,
     )
 
-    result = runner.invoke(app, ["sandbox", "web", "--session-id", "user-1"])
+    result = runner.invoke(
+        app,
+        ["sandbox", "web", "--session-id", "user-1", "--tool-id", "tool-stored"],
+    )
 
     assert result.exit_code == 0
     assert _FakeToolsClient.last_get_request.tool_id == "tool-stored"
@@ -4067,14 +4348,13 @@ def test_cli_shell_uploads_sources_before_command(monkeypatch, tmp_path) -> None
     _patch_shell_session(monkeypatch, cli_shell, stored_session)
     events = []
 
-    def fake_upload_source_before_exec(session, *, workspace, src_dirs, dst_dir):
+    def fake_upload_scp_source(session, *, source, destination):
         events.append(
             (
-                "upload",
+                "copy",
                 session,
-                workspace,
-                [str(src_dir) for src_dir in src_dirs],
-                dst_dir,
+                str(source),
+                destination,
             )
         )
 
@@ -4098,8 +4378,8 @@ def test_cli_shell_uploads_sources_before_command(monkeypatch, tmp_path) -> None
 
     monkeypatch.setattr(
         cli_shell,
-        "_upload_source_before_exec",
-        fake_upload_source_before_exec,
+        "_upload_scp_source",
+        fake_upload_scp_source,
     )
     monkeypatch.setattr(cli_shell.requests, "post", fake_post)
 
@@ -4112,24 +4392,28 @@ def test_cli_shell_uploads_sources_before_command(monkeypatch, tmp_path) -> None
             "user-1",
             "--command",
             "echo done",
-            "--src-dir",
+            "--copy",
             str(file_one),
+            "sandbox:/workspace/project/one.txt",
+            "--copy",
             str(file_two),
-            "--workspace",
-            "/workspace",
-            "--dst-dir",
-            "project",
+            "sandbox:/workspace/project/two.txt",
         ],
     )
 
     assert result.exit_code == 0
     assert events == [
         (
-            "upload",
+            "copy",
             stored_session,
-            "/workspace",
-            [str(file_one), str(file_two)],
-            "project",
+            str(file_one),
+            "/workspace/project/one.txt",
+        ),
+        (
+            "copy",
+            stored_session,
+            str(file_two),
+            "/workspace/project/two.txt",
         ),
         (
             "post",
@@ -4147,7 +4431,6 @@ def test_cli_shell_uploads_directory_as_directory_before_command(
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
     import agentkit.toolkit.cli.sandbox.cli_shell as cli_shell
 
     source_dir = tmp_path / "shell_dir"
@@ -4160,23 +4443,10 @@ def test_cli_shell_uploads_directory_as_directory_before_command(
         "endpoint": "https://sandbox.example.com",
     }
     _patch_shell_session(monkeypatch, cli_shell, stored_session)
-    monkeypatch.setattr(
-        cli_exec,
-        "_new_remote_archive_path",
-        lambda _prefix: "/tmp/agentkit-upload.tar",
-    )
     captured = {}
 
-    def fake_upload_remote_file(_session, *, local_path, remote_path):
-        assert remote_path == "/tmp/agentkit-upload.tar"
-        with tarfile.open(local_path, mode="r") as tar:
-            captured["archive_names"] = sorted(
-                member.name for member in tar.getmembers()
-            )
-
-    def fake_exec_shell_command(_session, command):
-        captured["extract_command"] = command
-        return {"success": True}
+    def fake_upload_scp_source(_session, *, source, destination):
+        captured["copy"] = (source, destination)
 
     class FakeResponse:
         text = '{"success": true}'
@@ -4196,8 +4466,7 @@ def test_cli_shell_uploads_directory_as_directory_before_command(
         captured["post"] = (url, json, timeout)
         return FakeResponse()
 
-    monkeypatch.setattr(cli_exec, "_upload_remote_file", fake_upload_remote_file)
-    monkeypatch.setattr(cli_exec, "_exec_shell_command", fake_exec_shell_command)
+    monkeypatch.setattr(cli_shell, "_upload_scp_source", fake_upload_scp_source)
     monkeypatch.setattr(cli_shell.requests, "post", fake_post)
 
     result = runner.invoke(
@@ -4209,22 +4478,14 @@ def test_cli_shell_uploads_directory_as_directory_before_command(
             "user-1",
             "--command",
             "echo done",
-            "--src-dir",
+            "--copy",
             str(source_dir),
-            "--workspace",
-            "/workspace",
-            "--dst-dir",
-            "tmp",
+            "sandbox:/workspace/tmp/shell_dir",
         ],
     )
 
     assert result.exit_code == 0
-    assert captured["archive_names"] == ["shell_dir", "shell_dir/hello.txt"]
-    assert captured["extract_command"] == (
-        "mkdir -p /workspace/tmp && tar -xf /tmp/agentkit-upload.tar "
-        "-C /workspace/tmp; status=$?; rm -f /tmp/agentkit-upload.tar; "
-        "[ $status -eq 0 ]"
-    )
+    assert captured["copy"] == (source_dir, "/workspace/tmp/shell_dir")
     assert captured["post"] == (
         "https://sandbox.example.com/v1/shell/exec",
         {"id": "", "exec_dir": "", "command": "echo done"},
@@ -4421,7 +4682,7 @@ def test_resolve_git_config_ini_supports_flat_user_keys(tmp_path) -> None:
     )
 
 
-def test_cli_shell_rejects_extra_source_without_src_dir(
+def test_cli_shell_rejects_unpaired_copy_source(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -4458,7 +4719,7 @@ def test_cli_shell_rejects_extra_source_without_src_dir(
     )
 
     assert result.exit_code == 1
-    assert "Additional source paths require --src-dir" in result.output
+    assert "Unexpected argument" in result.output
     assert posted["value"] is False
 
 
@@ -4537,7 +4798,7 @@ def test_cli_shell_creates_session_when_session_id_omitted(
     payload = json.loads(result.output)
     assert payload["data"]["shell_id"] == "shell-1"
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["user-session-from-api"]["tool_id"] == "tool-cli"
+    assert stored["tool-cli"]["user-session-from-api"]["tool_id"] == "tool-cli"
 
 
 def test_cli_exec_connects_to_ws_endpoint(monkeypatch, tmp_path) -> None:
@@ -4876,10 +5137,9 @@ exec:
     tool_id: tool-1
     command: codex
     mode: tmux
-    src_dir: ./workspace
-    extra_sources:
-      - ./README.md
-    dst_dir: project
+    copy:
+      - [./workspace, project/workspace]
+      - [./README.md, project/README.md]
   - name: right
     args:
       - --session-id
@@ -4909,9 +5169,24 @@ exec:
     assert "--tool-id tool-1" in result.output
     assert "--mode tmux" in result.output
     assert "--command codex" in result.output
-    assert "--src-dir ./workspace ./README.md" in result.output
-    assert "--dst-dir project" in result.output
+    assert "--copy ./workspace project/workspace" in result.output
+    assert "--copy ./README.md project/README.md" in result.output
     assert "--session-id user-right --command opencode" in result.output
+
+
+def test_cli_sandbox_run_copy_pair_helper_edges() -> None:
+    import agentkit.toolkit.cli.sandbox.cli_run as cli_run
+
+    assert cli_run._copy_pairs(None, "copy") == []
+    assert cli_run._copy_pairs(["./src", "sandbox:/tmp/src"], "copy") == [
+        ("./src", "sandbox:/tmp/src")
+    ]
+    with pytest.raises(cli_run.typer.Exit):
+        cli_run._copy_pairs("src", "copy")
+    with pytest.raises(cli_run.typer.Exit):
+        cli_run._copy_pairs([["src"]], "copy")
+    with pytest.raises(cli_run.typer.Exit):
+        cli_run._copy_pairs([["src", {"bad": "dst"}]], "copy")
 
 
 def test_cli_sandbox_run_errors_when_terminal_exceeds_yaml_entries(
@@ -5145,34 +5420,17 @@ def test_cli_exec_uploads_directory_before_connecting(
         "endpoint": "https://sandbox.example.com/?token=abc",
     }
     _patch_exec_session(monkeypatch, cli_exec, stored_session)
-    monkeypatch.setattr(
-        cli_exec,
-        "_new_remote_archive_path",
-        lambda _prefix: "/tmp/agentkit-upload.tar",
-    )
 
     events = []
 
-    def fake_upload_remote_file(session, *, local_path, remote_path):
+    def fake_upload_scp_source(session, *, source, destination):
         assert session == stored_session
-        assert local_path.exists()
-        assert remote_path == "/tmp/agentkit-upload.tar"
-        events.append(("upload", remote_path))
-        with tarfile.open(local_path, mode="r") as tar:
-            events.append(
-                ("archive", sorted(member.name for member in tar.getmembers()))
-            )
-
-    def fake_exec_shell_command(session, command):
-        assert session == stored_session
-        events.append(("extract", command))
-        return {"success": True}
+        events.append(("copy", source, destination))
 
     def fake_connect(ws_url, initial_command, on_shell_id=None):
         events.append(("connect", ws_url, initial_command))
 
-    monkeypatch.setattr(cli_exec, "_upload_remote_file", fake_upload_remote_file)
-    monkeypatch.setattr(cli_exec, "_exec_shell_command", fake_exec_shell_command)
+    monkeypatch.setattr(cli_exec, "_upload_scp_source", fake_upload_scp_source)
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
     result = runner.invoke(
@@ -5182,8 +5440,9 @@ def test_cli_exec_uploads_directory_before_connecting(
             "exec",
             "--session-id",
             "user-1",
-            "--src-dir",
+            "--copy",
             str(upload_dir),
+            "sandbox:/home/gem/upload-src",
             "--command",
             "codex",
         ],
@@ -5191,19 +5450,12 @@ def test_cli_exec_uploads_directory_before_connecting(
 
     assert result.exit_code == 0
     assert events == [
-        ("upload", "/tmp/agentkit-upload.tar"),
-        ("archive", ["upload-src", "upload-src/hello.txt"]),
-        (
-            "extract",
-            "mkdir -p /home/gem && tar -xf /tmp/agentkit-upload.tar "
-            "-C /home/gem; status=$?; rm -f /tmp/agentkit-upload.tar; "
-            "[ $status -eq 0 ]",
-        ),
+        ("copy", upload_dir, "/home/gem/upload-src"),
         ("connect", "ws://sandbox.example.com/v1/shell/ws?token=abc", "codex"),
     ]
 
 
-def test_cli_exec_upload_dir_resolves_relative_dst_dir_inside_workspace(
+def test_cli_exec_upload_dir_resolves_relative_copy_destination_inside_home_gem(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -5220,26 +5472,15 @@ def test_cli_exec_upload_dir_resolves_relative_dst_dir_inside_workspace(
         "endpoint": "https://sandbox.example.com",
     }
     _patch_exec_session(monkeypatch, cli_exec, stored_session)
-    monkeypatch.setattr(
-        cli_exec,
-        "_new_remote_archive_path",
-        lambda _prefix: "/tmp/agentkit-upload.tar",
-    )
-    monkeypatch.setattr(
-        cli_exec,
-        "_upload_remote_file",
-        lambda *_args, **_kwargs: None,
-    )
     captured = {}
 
-    def fake_exec_shell_command(_session, command):
-        captured["command"] = command
-        return {"success": True}
+    def fake_upload_scp_source(_session, *, source, destination):
+        captured["copy"] = (source, destination)
 
     def fake_connect(_ws_url, initial_command=None, on_shell_id=None):
         captured["connected"] = True
 
-    monkeypatch.setattr(cli_exec, "_exec_shell_command", fake_exec_shell_command)
+    monkeypatch.setattr(cli_exec, "_upload_scp_source", fake_upload_scp_source)
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
     result = runner.invoke(
@@ -5249,22 +5490,14 @@ def test_cli_exec_upload_dir_resolves_relative_dst_dir_inside_workspace(
             "exec",
             "--session-id",
             "user-1",
-            "--src-dir",
+            "--copy",
             str(upload_dir),
-            "--workspace",
-            "/workspace",
-            "--dst-dir",
-            "project",
+            "project/upload-src",
         ],
     )
 
     assert result.exit_code == 0
-    assert (
-        captured["command"]
-        == "mkdir -p /workspace/project && tar -xf /tmp/agentkit-upload.tar "
-        "-C /workspace/project; status=$?; rm -f /tmp/agentkit-upload.tar; "
-        "[ $status -eq 0 ]"
-    )
+    assert captured["copy"] == (upload_dir, "/home/gem/project/upload-src")
     assert captured["connected"] is True
 
 
@@ -5286,27 +5519,15 @@ def test_cli_exec_uploads_repeated_sources_before_connecting(
         "endpoint": "https://sandbox.example.com",
     }
     _patch_exec_session(monkeypatch, cli_exec, stored_session)
-    monkeypatch.setattr(
-        cli_exec,
-        "_new_remote_archive_path",
-        lambda _prefix: "/tmp/agentkit-upload.tar",
-    )
-    uploaded = {}
     captured = {}
 
-    def fake_upload_remote_file(_session, *, local_path, remote_path):
-        uploaded["local_path"] = local_path
-        uploaded["remote_path"] = remote_path
-
-    def fake_exec_shell_command(_session, command):
-        captured["command"] = command
-        return {"success": True}
+    def fake_upload_scp_source(_session, *, source, destination):
+        captured.setdefault("copies", []).append((source, destination))
 
     def fake_connect(_ws_url, initial_command=None, on_shell_id=None):
         captured["connected"] = True
 
-    monkeypatch.setattr(cli_exec, "_upload_remote_file", fake_upload_remote_file)
-    monkeypatch.setattr(cli_exec, "_exec_shell_command", fake_exec_shell_command)
+    monkeypatch.setattr(cli_exec, "_upload_scp_source", fake_upload_scp_source)
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
     result = runner.invoke(
@@ -5316,50 +5537,30 @@ def test_cli_exec_uploads_repeated_sources_before_connecting(
             "exec",
             "--session-id",
             "user-1",
-            "--src-dir",
+            "--copy",
             str(file_one),
+            "sandbox:/workspace/project/one.txt",
+            "--copy",
             str(file_two),
-            "--workspace",
-            "/workspace",
-            "--dst-dir",
-            "project",
+            "sandbox:/workspace/project/two.txt",
         ],
     )
 
     assert result.exit_code == 0
-    assert uploaded["remote_path"] == "/tmp/agentkit-upload.tar"
-    assert not uploaded["local_path"].exists()
-    assert (
-        captured["command"]
-        == "mkdir -p /workspace/project && tar -xf /tmp/agentkit-upload.tar "
-        "-C /workspace/project; status=$?; rm -f /tmp/agentkit-upload.tar; "
-        "[ $status -eq 0 ]"
-    )
+    assert captured["copies"] == [
+        (file_one, "/workspace/project/one.txt"),
+        (file_two, "/workspace/project/two.txt"),
+    ]
     assert captured["connected"] is True
 
 
-def test_cli_exec_upload_rejects_duplicate_source_names(
+def test_cli_exec_copy_rejects_sandbox_source_before_connecting(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
 
-    dir_one = tmp_path / "one"
-    dir_two = tmp_path / "two"
-    dir_one.mkdir()
-    dir_two.mkdir()
-    file_one = dir_one / "same.txt"
-    file_two = dir_two / "same.txt"
-    file_one.write_text("one", encoding="utf-8")
-    file_two.write_text("two", encoding="utf-8")
-    stored_session = {
-        "session_id": "user-1",
-        "tool_id": "tool-1",
-        "instance_id": "session-1",
-        "endpoint": "https://sandbox.example.com",
-    }
-    _patch_exec_session(monkeypatch, cli_exec, stored_session)
     connected = {"value": False}
     monkeypatch.setattr(
         cli_exec,
@@ -5374,18 +5575,18 @@ def test_cli_exec_upload_rejects_duplicate_source_names(
             "exec",
             "--session-id",
             "user-1",
-            "--src-dir",
-            str(file_one),
-            str(file_two),
+            "--copy",
+            "sandbox:/tmp/input.txt",
+            str(tmp_path / "out.txt"),
         ],
     )
 
     assert result.exit_code == 1
-    assert "Duplicate source name: same.txt" in result.output
+    assert "--copy only supports local-to-sandbox transfers" in result.output
     assert connected["value"] is False
 
 
-def test_cli_exec_rejects_extra_source_without_src_dir(
+def test_cli_exec_rejects_unpaired_copy_source(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -5420,23 +5621,18 @@ def test_cli_exec_rejects_extra_source_without_src_dir(
     )
 
     assert result.exit_code == 1
-    assert "Additional source paths require --src-dir" in result.output
+    assert "Unexpected argument" in result.output
     assert connected["value"] is False
 
 
-def test_cli_exec_upload_rejects_absolute_dst_dir(monkeypatch, tmp_path) -> None:
+def test_cli_exec_copy_rejects_relative_destination_escape(
+    monkeypatch, tmp_path
+) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
 
-    upload_dir = tmp_path / "upload-src"
-    upload_dir.mkdir()
-    stored_session = {
-        "session_id": "user-1",
-        "tool_id": "tool-1",
-        "instance_id": "session-1",
-        "endpoint": "https://sandbox.example.com",
-    }
-    _patch_exec_session(monkeypatch, cli_exec, stored_session)
+    source = tmp_path / "input.txt"
+    source.write_text("input", encoding="utf-8")
     connected = {"value": False}
     monkeypatch.setattr(
         cli_exec,
@@ -5451,15 +5647,14 @@ def test_cli_exec_upload_rejects_absolute_dst_dir(monkeypatch, tmp_path) -> None
             "exec",
             "--session-id",
             "user-1",
-            "--src-dir",
-            str(upload_dir),
-            "--dst-dir",
-            "/absolute",
+            "--copy",
+            str(source),
+            "sandbox:../../etc/passwd",
         ],
     )
 
     assert result.exit_code == 1
-    assert "--dst-dir must be relative to --workspace" in result.output
+    assert "Relative sandbox path must stay inside /home/gem" in result.output
     assert connected["value"] is False
 
 
@@ -5540,6 +5735,7 @@ def test_cli_exec_model_name_without_provider_syncs_codex_config(
 
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
     store_path = _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
     stored_session = {
         "session_id": "user-1",
         "tool_id": "tool-1",
@@ -5930,6 +6126,41 @@ def test_cli_exec_rejects_non_ark_model_base_url_without_model_provider() -> Non
     )
 
 
+def test_cli_exec_rejects_cli_model_base_url_with_configured_provider(tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: model_square",
+                "  base_url: https://ark.cn-beijing.volces.com/api/v3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--model-base-url",
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+            "--command",
+            "echo should-not-run; exit",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "--model-base-url requires --model-provider for non-Ark base URLs"
+        in result.output
+    )
+
+
 def test_cli_exec_allows_arbitrary_model_provider_without_base_url(
     monkeypatch,
     tmp_path,
@@ -6143,7 +6374,7 @@ def test_cli_exec_clears_remote_shell_id_on_disconnect(
         assert on_shell_id is not None
         on_shell_id("shell-from-ws")
         stored = json.loads(store_path.read_text(encoding="utf-8"))
-        assert stored["user-1"]["terminal_shell_id"] == ["shell-from-ws"]
+        assert stored["tool-1"]["user-1"]["terminal_shell_id"] == ["shell-from-ws"]
 
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
@@ -6154,7 +6385,7 @@ def test_cli_exec_clears_remote_shell_id_on_disconnect(
 
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert "terminal_shell_id" not in stored["user-1"]
+    assert "terminal_shell_id" not in stored["tool-1"]["user-1"]
     assert "Shell ID: shell-from-ws" in result.output
 
 
@@ -6182,7 +6413,9 @@ def test_cli_exec_does_not_clear_newer_shell_id(
         assert on_shell_id is not None
         on_shell_id("shell-from-ws")
         stored = json.loads(store_path.read_text(encoding="utf-8"))
-        stored["user-1"]["terminal_shell_id"].append("shell-from-newer-terminal")
+        stored["tool-1"]["user-1"]["terminal_shell_id"].append(
+            "shell-from-newer-terminal"
+        )
         store_path.write_text(json.dumps(stored), encoding="utf-8")
 
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
@@ -6194,7 +6427,9 @@ def test_cli_exec_does_not_clear_newer_shell_id(
 
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["user-1"]["terminal_shell_id"] == ["shell-from-newer-terminal"]
+    assert stored["tool-1"]["user-1"]["terminal_shell_id"] == [
+        "shell-from-newer-terminal"
+    ]
 
 
 def test_cli_exec_keeps_stored_shell_ids_without_current_shell_id(
@@ -6261,6 +6496,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         list(
             executor.map(
                 lambda shell_id: sandbox_client.add_session_terminal_shell_id(
+                    "tool-1",
                     "user-1",
                     shell_id,
                 ),
@@ -6269,7 +6505,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         )
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert sorted(stored["user-1"]["terminal_shell_id"]) == sorted(
+    assert sorted(stored["tool-1"]["user-1"]["terminal_shell_id"]) == sorted(
         ["legacy-shell", *shell_ids]
     )
 
@@ -6277,6 +6513,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         list(
             executor.map(
                 lambda shell_id: sandbox_client.remove_session_terminal_shell_id(
+                    "tool-1",
                     "user-1",
                     shell_id,
                 ),
@@ -6285,7 +6522,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         )
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert sorted(stored["user-1"]["terminal_shell_id"]) == sorted(
+    assert sorted(stored["tool-1"]["user-1"]["terminal_shell_id"]) == sorted(
         ["legacy-shell", *shell_ids[10:]]
     )
 
@@ -6328,7 +6565,7 @@ def test_cli_exec_creates_session_when_session_id_omitted(
     assert captured["on_shell_id"] is not None
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["user-session-from-api"]["tool_id"] == "tool-cli"
+    assert stored["tool-cli"]["user-session-from-api"]["tool_id"] == "tool-cli"
 
 
 def test_cli_exec_creates_tool_when_tool_resolution_is_empty(
@@ -6368,6 +6605,72 @@ def test_cli_exec_creates_tool_when_tool_resolution_is_empty(
     result = runner.invoke(app, ["sandbox", "exec"])
 
     assert result.exit_code == 0
+    assert _FakeToolsClient.last_request.tool_id == "tool-from-create"
+
+
+def test_cli_exec_auto_create_tool_uses_split_network_config(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOOL_ID", raising=False)
+    _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "network:",
+                "  enable_public: false",
+                "  enable_private: true",
+                "  enable_shared_internet: true",
+                "  vpc_id: vpc-from-config",
+                "  subnet_ids:",
+                "    - subnet-a",
+                "    - subnet-b",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    captured_create = {}
+
+    def fake_create_tool(tool_type="CodeEnv", **kwargs):
+        captured_create.update(kwargs)
+        return {
+            "tool_id": "tool-from-create",
+            "tool_type": tool_type,
+            "name": "created-tool",
+            "status": "Ready",
+        }
+
+    def fake_connect(ws_url, initial_command, on_shell_id=None):
+        assert ws_url == "ws://sandbox.example.com/v1/shell/ws"
+        assert initial_command is None
+        assert on_shell_id is not None
+
+    monkeypatch.setattr(cli_create, "create_tool", fake_create_tool)
+    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
+
+    result = runner.invoke(app, ["sandbox", "exec"])
+
+    assert result.exit_code == 0
+    assert "network_config" not in captured_create
+    assert captured_create["network_enable_public"] is False
+    assert captured_create["network_enable_private"] is True
+    assert captured_create["network_enable_shared_internet"] is True
+    assert captured_create["network_vpc_id"] == "vpc-from-config"
+    assert captured_create["network_subnet_ids"] == "subnet-a,subnet-b"
     assert _FakeToolsClient.last_request.tool_id == "tool-from-create"
 
 

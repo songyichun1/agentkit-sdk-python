@@ -24,7 +24,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from agentkit.toolkit.cli.sandbox.cli_file import _exec_shell_command
+from agentkit.toolkit.cli.sandbox.cli_scp import _exec_shell_command
 
 
 LOCAL_GIT_CONFIG_VALUE = "local"

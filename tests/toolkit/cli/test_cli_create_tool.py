@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
+import yaml
 
 runner = CliRunner()
 _PLACEHOLDER_A = "example-value-a"
@@ -39,8 +40,23 @@ def tool_store_path(monkeypatch, tmp_path):
     return store_path
 
 
+@pytest.fixture
+def sandbox_config_path(monkeypatch, tmp_path):
+    import agentkit.toolkit.cli.sandbox.config_store as config_store
+
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    legacy_path = tmp_path / ".agentkit" / "sandbox" / "sandbox.yaml"
+    monkeypatch.setattr(config_store, "get_sandbox_config_path", lambda: config_path)
+    monkeypatch.setattr(
+        config_store,
+        "get_legacy_sandbox_config_path",
+        lambda: legacy_path,
+    )
+    return config_path
+
+
 @pytest.fixture(autouse=True)
-def _use_tool_store_path(tool_store_path):
+def _use_local_sandbox_paths(tool_store_path, sandbox_config_path):
     pass
 
 
@@ -192,6 +208,7 @@ def _use_platform_config(monkeypatch, tmp_path):
 def test_create_command_skips_tos_mount_by_default(
     monkeypatch,
     tool_store_path,
+    sandbox_config_path,
 ):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
@@ -231,23 +248,122 @@ def test_create_command_skips_tos_mount_by_default(
             "ModelProvider": "model_square",
         }
     }
+    sandbox_config = yaml.safe_load(sandbox_config_path.read_text(encoding="utf-8"))
+    assert sandbox_config["session"]["tool_id"] == "t-created"
+    assert sandbox_config["session"]["tool_name"] == "demo-tool"
+    assert "id" not in sandbox_config.get("tool", {})
+    assert "name" not in sandbox_config.get("tool", {})
 
 
-def test_create_command_passes_network_config_file(monkeypatch, tmp_path):
+def test_create_command_does_not_read_config_tool_name(
+    monkeypatch,
+    sandbox_config_path,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    sandbox_config_path.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_config_path.write_text(
+        "session:\n  tool_name: configured-tool-name\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(app, ["sandbox", "create"])
+
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_request.name != "configured-tool-name"
+    assert _FakeToolsClient.last_request.name.startswith("agentkit-codeenv-")
+
+
+def test_create_command_only_updates_session_tool_identifier_config(
+    monkeypatch,
+    sandbox_config_path,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    sandbox_config_path.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_config_path.write_text(
+        "tool:\n  type: CodeEnv\n  cpu: 8\n  enable_snapshot: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(app, ["sandbox", "create", "--tool-name", "demo-tool"])
+
+    assert result.exit_code == 0
+    payload = yaml.safe_load(sandbox_config_path.read_text(encoding="utf-8"))
+    assert payload["tool"] == {
+        "type": "CodeEnv",
+        "cpu": 8,
+        "enable_snapshot": True,
+    }
+    assert payload["session"]["tool_id"] == "t-created"
+    assert payload["session"]["tool_name"] == "demo-tool"
+
+
+def test_create_command_passes_network_options(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
     _reset_fake_tools_client()
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
-    config_path = tmp_path / "network.json"
-    config_path.write_text(
-        json.dumps(
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--no-network-public",
+            "--network-private",
+            "--network-shared-internet",
+            "--network-vpc-id",
+            "vpc-123",
+            "--network-subnet-ids",
+            "subnet-a, subnet-b",
+        ],
+    )
+
+    assert result.exit_code == 0
+    network = _FakeToolsClient.last_request.network_configuration
+    assert network is not None
+    assert network.enable_private_network is True
+    assert network.enable_public_network is False
+    assert network.vpc_configuration is not None
+    assert network.vpc_configuration.vpc_id == "vpc-123"
+    assert network.vpc_configuration.subnet_ids == ["subnet-a", "subnet-b"]
+    assert network.vpc_configuration.enable_shared_internet_access is True
+
+
+def test_create_command_uses_network_config_defaults(
+    monkeypatch,
+    sandbox_config_path,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+    sandbox_config_path.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_config_path.write_text(
+        yaml.safe_dump(
             {
-                "private_access": True,
-                "public_access": True,
-                "vpc_id": "vpc-123",
-                "subnet_ids": ["subnet-a"],
+                "network": {
+                    "enable_public": False,
+                    "enable_private": True,
+                    "enable_shared_internet": True,
+                    "vpc_id": "vpc-from-config",
+                    "subnet_ids": ["subnet-a", "subnet-b"],
+                }
             }
         ),
         encoding="utf-8",
@@ -260,19 +376,18 @@ def test_create_command_passes_network_config_file(monkeypatch, tmp_path):
             "create",
             "--tool-name",
             "demo-tool",
-            "--network-config",
-            str(config_path),
         ],
     )
 
     assert result.exit_code == 0
     network = _FakeToolsClient.last_request.network_configuration
     assert network is not None
+    assert network.enable_public_network is False
     assert network.enable_private_network is True
-    assert network.enable_public_network is True
     assert network.vpc_configuration is not None
-    assert network.vpc_configuration.vpc_id == "vpc-123"
-    assert network.vpc_configuration.subnet_ids == ["subnet-a"]
+    assert network.vpc_configuration.vpc_id == "vpc-from-config"
+    assert network.vpc_configuration.subnet_ids == ["subnet-a", "subnet-b"]
+    assert network.vpc_configuration.enable_shared_internet_access is True
 
 
 def test_create_command_uses_region_envs(monkeypatch):
@@ -659,7 +774,7 @@ def test_build_create_tool_request_skips_tos_mount_without_bucket(monkeypatch):
     assert request.tos_mount_config is None
 
 
-def test_build_create_tool_request_uses_inline_network_config(monkeypatch):
+def test_build_create_tool_request_uses_network_options(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 
     _reset_fake_tools_client()
@@ -670,15 +785,10 @@ def test_build_create_tool_request_uses_inline_network_config(monkeypatch):
         name="demo-tool",
         tos_bucket=None,
         tos_region="cn-beijing",
-        network_config=json.dumps(
-            {
-                "private_access": True,
-                "public_access": True,
-                "vpc_id": " vpc-123 ",
-                "subnet_ids": [" subnet-a ", "subnet-b"],
-                "enable_shared_internet_access": True,
-            }
-        ),
+        network_enable_private=True,
+        network_enable_shared_internet=True,
+        network_vpc_id=" vpc-123 ",
+        network_subnet_ids=" subnet-a , subnet-b ",
     )
 
     network = request.network_configuration
@@ -692,30 +802,21 @@ def test_build_create_tool_request_uses_inline_network_config(monkeypatch):
     assert vpc.enable_shared_internet_access is True
 
 
-def test_build_create_tool_request_uses_network_config_file(monkeypatch, tmp_path):
+def test_build_create_tool_request_can_disable_public_network(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 
     _reset_fake_tools_client()
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
-    config_path = tmp_path / "network.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "private_access": True,
-                "public_access": False,
-                "vpc_id": "vpc-123",
-                "subnet_ids": "subnet-a, subnet-b",
-            }
-        ),
-        encoding="utf-8",
-    )
 
     request = cli_create._build_create_tool_request(
         tool_type="CodeEnv",
         name="demo-tool",
         tos_bucket=None,
         tos_region="cn-beijing",
-        network_config=str(config_path),
+        network_enable_public=False,
+        network_enable_private=True,
+        network_vpc_id="vpc-123",
+        network_subnet_ids="subnet-a, subnet-b",
     )
 
     network = request.network_configuration
@@ -729,38 +830,44 @@ def test_build_create_tool_request_uses_network_config_file(monkeypatch, tmp_pat
 
 
 @pytest.mark.parametrize(
-    ("network_config", "message"),
+    ("kwargs", "message"),
     [
-        ("[]", "expected a JSON object"),
-        ('{"private_access":"yes"}', "private_access must be a boolean"),
         (
-            '{"private_access":true}',
-            "vpc_id is required when private_access is true",
+            {"network_enable_private": True},
+            "--network-vpc-id is required when --network-private is true",
         ),
         (
-            '{"vpc_id":"vpc-123"}',
-            "vpc_id, subnet_ids, and enable_shared_internet_access require "
-            "private_access=true",
+            {"network_enable_public": False, "network_enable_private": False},
+            "--network-private and --network-public cannot both be false",
         ),
-        ('{"private_access":true,"vpc_id":"vpc-123","foo":true}', "foo"),
         (
-            '{"private_access":true,"vpc_id":"vpc-123","subnet_ids":[1]}',
-            "subnet_ids[0] must be a string",
+            {"network_vpc_id": "vpc-123"},
+            "--network-vpc-id, --network-subnet-ids, and "
+            "--network-shared-internet require --network-private",
+        ),
+        (
+            {"network_enable_shared_internet": True},
+            "--network-vpc-id, --network-subnet-ids, and "
+            "--network-shared-internet require --network-private",
+        ),
+        (
+            {"network_subnet_ids": " , "},
+            "--network-subnet-ids must contain at least one value",
         ),
     ],
 )
 def test_build_network_configuration_reports_field_errors(
-    network_config,
+    kwargs,
     message,
     capsys,
 ):
     from agentkit.toolkit.cli.sandbox import cli_create
 
     with pytest.raises(cli_create.typer.Exit):
-        cli_create._build_network_configuration(network_config)
+        cli_create._build_network_configuration(**kwargs)
 
     captured = capsys.readouterr()
-    assert "Invalid --network-config" in captured.err
+    assert "Invalid network configuration" in captured.err
     assert message in captured.err
 
 
@@ -1463,6 +1570,48 @@ def test_create_command_rejects_non_ark_model_base_url_without_model_provider(
             "custom-model",
             "--model-base-url",
             "https://models.example.com/v1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "--model-base-url requires --model-provider for non-Ark base URLs"
+        in result.output
+    )
+    assert _FakeToolsClient.instances == []
+
+
+def test_create_command_rejects_cli_model_base_url_with_configured_provider(
+    monkeypatch,
+    sandbox_config_path,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    sandbox_config_path.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_config_path.write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: model_square",
+                "  base_url: https://ark.cn-beijing.volces.com/api/v3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--model-base-url",
+            "https://open.bigmodel.cn/api/coding/paas/v4",
         ],
     )
 
