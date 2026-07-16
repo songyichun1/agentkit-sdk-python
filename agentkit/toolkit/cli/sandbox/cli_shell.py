@@ -30,7 +30,7 @@ from agentkit.toolkit.cli.sandbox.config_store import (
 from agentkit.toolkit.cli.sandbox.cli_exec import (
     _collect_copy_specs,
 )
-from agentkit.toolkit.cli.sandbox.cli_file import _upload_scp_source
+from agentkit.toolkit.cli.sandbox.cli_scp import _upload_scp_source
 from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
     ensure_sandbox_session,

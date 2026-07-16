@@ -28,7 +28,7 @@ from typing import Optional
 
 import typer
 
-from agentkit.toolkit.cli.sandbox.cli_file import _exec_shell_command
+from agentkit.toolkit.cli.sandbox.cli_scp import _exec_shell_command
 from agentkit.toolkit.cli.sandbox.model_config import (
     CODEX_LOGIN_MODEL_PROVIDER_ID,
     MODEL_API_KEY_ENV_KEYS,

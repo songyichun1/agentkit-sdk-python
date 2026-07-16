@@ -39,7 +39,7 @@ from agentkit.toolkit.cli.sandbox.config_store import (
     configured_sandbox_config,
     param_was_provided,
 )
-from agentkit.toolkit.cli.sandbox.cli_file import (
+from agentkit.toolkit.cli.sandbox.cli_scp import (
     SANDBOX_OPERAND_PREFIX,
     _resolve_sandbox_operand,
     _upload_scp_source,

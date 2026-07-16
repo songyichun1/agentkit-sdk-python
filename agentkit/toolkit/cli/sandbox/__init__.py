@@ -18,7 +18,7 @@ from agentkit.toolkit.cli.sandbox.cli import sandbox_app
 from agentkit.toolkit.cli.sandbox.cli_build import build_command
 from agentkit.toolkit.cli.sandbox.cli_create import create_command
 from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
-from agentkit.toolkit.cli.sandbox.cli_file import scp_command
+from agentkit.toolkit.cli.sandbox.cli_scp import scp_command
 from agentkit.toolkit.cli.sandbox.cli_list import list_command
 from agentkit.toolkit.cli.sandbox.cli_init import init_command
 from agentkit.toolkit.cli.sandbox.cli_run import run_command

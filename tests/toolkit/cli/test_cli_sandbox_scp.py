@@ -31,7 +31,7 @@ class _FakeResponse:
         yield self._content
 
 
-def _patch_session(monkeypatch, tmp_path, cli_file):
+def _patch_session(monkeypatch, tmp_path, cli_scp):
     import agentkit.toolkit.cli.sandbox.sandbox_client as sandbox_client
 
     session = {
@@ -43,9 +43,9 @@ def _patch_session(monkeypatch, tmp_path, cli_file):
     store_path = tmp_path / "sessions.json"
     store_path.write_text(json.dumps({"user-1": session}), encoding="utf-8")
     monkeypatch.setattr(sandbox_client, "_get_session_store_path", lambda: store_path)
-    monkeypatch.setattr(cli_file, "AgentkitToolsClient", lambda: object())
+    monkeypatch.setattr(cli_scp, "AgentkitToolsClient", lambda: object())
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "sync_remote_sessions",
         lambda **_kwargs: "tool-1",
     )
@@ -111,9 +111,9 @@ def test_resolve_sandbox_operand_normalizes_absolute_and_relative_paths(
     value,
     expected,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    assert cli_file._resolve_sandbox_operand(value) == expected
+    assert cli_scp._resolve_sandbox_operand(value) == expected
 
 
 @pytest.mark.parametrize(
@@ -126,21 +126,21 @@ def test_resolve_sandbox_operand_normalizes_absolute_and_relative_paths(
     ],
 )
 def test_resolve_sandbox_operand_rejects_invalid_paths(value, message) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._resolve_sandbox_operand(value)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._resolve_sandbox_operand(value)
 
 
 def test_resolve_scp_operands_detects_direction() -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    assert cli_file._resolve_scp_operands("local.txt", "sandbox:tmp/out.txt") == (
+    assert cli_scp._resolve_scp_operands("local.txt", "sandbox:tmp/out.txt") == (
         "upload",
         Path("local.txt"),
         "/home/gem/tmp/out.txt",
     )
-    assert cli_file._resolve_scp_operands("sandbox:/tmp/out.txt", "local.txt") == (
+    assert cli_scp._resolve_scp_operands("sandbox:/tmp/out.txt", "local.txt") == (
         "download",
         "/tmp/out.txt",
         Path("local.txt"),
@@ -158,17 +158,17 @@ def test_resolve_scp_operands_requires_exactly_one_sandbox_path(
     source,
     destination,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._resolve_scp_operands(source, destination)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._resolve_scp_operands(source, destination)
 
 
 def test_scp_upload_file_uses_archive_and_remote_copy(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     source = tmp_path / "config.yaml"
     source.write_text("answer: 42\n", encoding="utf-8")
     captured = {}
@@ -183,7 +183,7 @@ def test_scp_upload_file_uses_archive_and_remote_copy(monkeypatch, tmp_path) -> 
             payload={"success": True, "data": {"status": "completed", "exit_code": 0}}
         )
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
 
     result = runner.invoke(
         app,
@@ -213,9 +213,9 @@ def test_scp_upload_directory_is_recursive_and_resolves_relative_remote_path(
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     source = tmp_path / "project"
     (source / "nested").mkdir(parents=True)
     (source / "nested" / "app.py").write_text("print(42)\n", encoding="utf-8")
@@ -228,7 +228,7 @@ def test_scp_upload_directory_is_recursive_and_resolves_relative_remote_path(
         captured["shell_command"] = kwargs["json"]["command"]
         return _FakeResponse(payload={"success": True, "data": {"exit_code": 0}})
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
     result = runner.invoke(
         app,
         ["sandbox", "scp", "-s", "user-1", str(source), "sandbox:workspace"],
@@ -250,15 +250,15 @@ def _run_upload_command_locally(
     *,
     destination_as_directory: bool = False,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    archive_path = cli_file._create_sources_upload_archive([source])
+    archive_path = cli_scp._create_sources_upload_archive([source])
     remote_archive_path = tmp_path / "remote-upload.tar"
     archive_path.replace(remote_archive_path)
     destination_arg = (
         str(destination) + "/" if destination_as_directory else str(destination)
     )
-    command = cli_file._build_remote_scp_upload_command(
+    command = cli_scp._build_remote_scp_upload_command(
         archive_path=str(remote_archive_path),
         source_name=source.name,
         destination=destination_arg,
@@ -354,9 +354,9 @@ def test_scp_upload_directory_without_trailing_slash_keeps_scp_copy_semantics(
 
 def test_scp_upload_rejects_missing_local_source(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     result = runner.invoke(
         app,
         ["sandbox", "scp", "-s", "user-1", "missing", "sandbox:/tmp/out"],
@@ -368,21 +368,21 @@ def test_scp_upload_rejects_missing_local_source(monkeypatch, tmp_path) -> None:
 def test_validate_scp_local_source_rejects_special_file_and_root_name(
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     fifo = tmp_path / "pipe"
     os.mkfifo(fifo)
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._validate_scp_local_source(fifo)
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._validate_scp_local_source(Path("/"))
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._validate_scp_local_source(fifo)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._validate_scp_local_source(Path("/"))
 
 
 def test_scp_download_file_overwrites_like_linux_scp(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     destination = tmp_path / "result.txt"
     destination.write_text("old", encoding="utf-8")
     archive = _tar_bytes({"source.txt": b"new"})
@@ -397,9 +397,9 @@ def test_scp_download_file_overwrites_like_linux_scp(monkeypatch, tmp_path) -> N
             )
         return _FakeResponse(payload={"success": True, "data": {"exit_code": 0}})
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
     monkeypatch.setattr(
-        cli_file.requests,
+        cli_scp.requests,
         "get",
         lambda *_args, **_kwargs: _FakeResponse(content=archive),
     )
@@ -431,9 +431,9 @@ def test_scp_download_file_into_existing_directory_uses_source_name(
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     destination = tmp_path / "downloads"
     destination.mkdir()
     archive = _tar_bytes({"source.txt": b"content"})
@@ -445,9 +445,9 @@ def test_scp_download_file_into_existing_directory_uses_source_name(
             payload={"success": True, "data": {"exit_code": 0, "output": output}}
         )
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
     monkeypatch.setattr(
-        cli_file.requests,
+        cli_scp.requests,
         "get",
         lambda *_args, **_kwargs: _FakeResponse(content=archive),
     )
@@ -472,9 +472,9 @@ def test_scp_download_file_into_existing_trailing_slash_directory_uses_source_na
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     destination = tmp_path / "downloads"
     destination.mkdir()
     archive = _tar_bytes({"source.txt": b"content"})
@@ -486,9 +486,9 @@ def test_scp_download_file_into_existing_trailing_slash_directory_uses_source_na
             payload={"success": True, "data": {"exit_code": 0, "output": output}}
         )
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
     monkeypatch.setattr(
-        cli_file.requests,
+        cli_scp.requests,
         "get",
         lambda *_args, **_kwargs: _FakeResponse(content=archive),
     )
@@ -511,9 +511,9 @@ def test_scp_download_file_into_existing_trailing_slash_directory_uses_source_na
 
 def test_scp_download_directory_merges_and_overwrites(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     destination = tmp_path / "destination"
     existing = destination / "project"
     existing.mkdir(parents=True)
@@ -530,9 +530,9 @@ def test_scp_download_directory_merges_and_overwrites(monkeypatch, tmp_path) -> 
             payload={"success": True, "data": {"exit_code": 0, "output": output}}
         )
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
     monkeypatch.setattr(
-        cli_file.requests,
+        cli_scp.requests,
         "get",
         lambda *_args, **_kwargs: _FakeResponse(content=archive),
     )
@@ -558,9 +558,9 @@ def test_scp_download_directory_source_with_trailing_slash_uses_source_parent(
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     destination = tmp_path / "downloads"
     destination.mkdir()
     archive = _tar_bytes(
@@ -577,9 +577,9 @@ def test_scp_download_directory_source_with_trailing_slash_uses_source_parent(
             payload={"success": True, "data": {"exit_code": 0, "output": output}}
         )
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
     monkeypatch.setattr(
-        cli_file.requests,
+        cli_scp.requests,
         "get",
         lambda *_args, **_kwargs: _FakeResponse(content=archive),
     )
@@ -607,9 +607,9 @@ def test_scp_download_file_to_missing_trailing_slash_destination_rejects_directo
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     archive = _tar_bytes({"source.txt": b"content"})
     destination = tmp_path / "missing-dir"
 
@@ -620,9 +620,9 @@ def test_scp_download_file_to_missing_trailing_slash_destination_rejects_directo
             payload={"success": True, "data": {"exit_code": 0, "output": output}}
         )
 
-    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(cli_scp.requests, "post", fake_post)
     monkeypatch.setattr(
-        cli_file.requests,
+        cli_scp.requests,
         "get",
         lambda *_args, **_kwargs: _FakeResponse(content=archive),
     )
@@ -645,7 +645,7 @@ def test_scp_download_file_to_missing_trailing_slash_destination_rejects_directo
 
 
 def test_scp_download_rejects_file_directory_collision(monkeypatch, tmp_path) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     source = tmp_path / "stage" / "item"
     source.parent.mkdir()
@@ -654,50 +654,50 @@ def test_scp_download_rejects_file_directory_collision(monkeypatch, tmp_path) ->
     destination.mkdir()
     (destination / "item").mkdir()
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._copy_downloaded_source(source, destination)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._copy_downloaded_source(source, destination)
 
 
 def test_remote_source_type_rejects_unknown_output(monkeypatch) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_exec_shell_command",
         lambda *_args, **_kwargs: {"data": {"output": "mystery"}},
     )
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._remote_source_type({"endpoint": "https://example.com"}, "/tmp/x")
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._remote_source_type({"endpoint": "https://example.com"}, "/tmp/x")
 
 
 def test_remote_source_type_reports_missing_source(monkeypatch, capsys) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_exec_shell_command",
         lambda *_args, **_kwargs: {"data": {"output": "missing"}},
     )
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._remote_source_type({"endpoint": "https://example.com"}, "/tmp/x")
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._remote_source_type({"endpoint": "https://example.com"}, "/tmp/x")
 
     assert "Source path not found: /tmp/x" in capsys.readouterr().err
 
 
 def test_remote_archive_command_handles_root_source() -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    assert cli_file._build_remote_scp_archive_command(
+    assert cli_scp._build_remote_scp_archive_command(
         archive_path="/tmp/archive.tar",
         source="/",
     ).startswith("tar -cf /tmp/archive.tar -C / .;")
 
 
 def test_remote_archive_command_strips_trailing_slash_before_parent_lookup() -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    command = cli_file._build_remote_scp_archive_command(
+    command = cli_scp._build_remote_scp_archive_command(
         archive_path="/tmp/archive.tar",
         source="/tmp/project/",
     )
@@ -707,9 +707,9 @@ def test_remote_archive_command_strips_trailing_slash_before_parent_lookup() -> 
 
 
 def test_shell_output_returns_empty_for_unexpected_payload() -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    assert cli_file._shell_output({"data": "not-a-dict"}) == ""
+    assert cli_scp._shell_output({"data": "not-a-dict"}) == ""
 
 
 def test_scp_requires_session_id() -> None:
@@ -733,9 +733,9 @@ def test_scp_requires_session_id() -> None:
     ],
 )
 def test_format_response_error_extracts_api_messages(payload, expected) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    message = cli_file._format_response_error(
+    message = cli_scp._format_response_error(
         _FakeResponse(status_code=400, payload=payload),
         "file upload",
     )
@@ -744,9 +744,9 @@ def test_format_response_error_extracts_api_messages(payload, expected) -> None:
 
 
 def test_format_response_error_extracts_validation_detail() -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    message = cli_file._format_response_error(
+    message = cli_scp._format_response_error(
         _FakeResponse(
             status_code=422,
             payload={"detail": [{"loc": ["body", "path"], "msg": "invalid path"}]},
@@ -758,32 +758,32 @@ def test_format_response_error_extracts_validation_detail() -> None:
 
 
 def test_json_response_rejects_invalid_or_failed_payloads() -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._json_response(
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._json_response(
             _FakeResponse(
                 status_code=503,
                 payload={"message": "temporarily unavailable"},
             ),
             "file upload",
         )
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._json_response(
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._json_response(
             _FakeResponse(payload=ValueError("bad"), text="<html>"),
             "file upload",
         )
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._json_response(_FakeResponse(payload=[]), "file upload")
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._json_response(
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._json_response(_FakeResponse(payload=[]), "file upload")
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._json_response(
             _FakeResponse(payload={"success": False, "message": "denied"}),
             "file upload",
         )
 
 
 def test_exec_shell_command_reports_running_and_failed_commands(monkeypatch) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     responses = [
         _FakeResponse(payload={"success": True, "data": "done"}),
@@ -802,15 +802,15 @@ def test_exec_shell_command_reports_running_and_failed_commands(monkeypatch) -> 
     ]
 
     monkeypatch.setattr(
-        cli_file.requests, "post", lambda *_args, **_kwargs: responses.pop(0)
+        cli_scp.requests, "post", lambda *_args, **_kwargs: responses.pop(0)
     )
     session = {"endpoint": "https://sandbox.example.com"}
 
-    assert cli_file._exec_shell_command(session, "true")["data"] == "done"
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._exec_shell_command(session, "sleep 10")
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._exec_shell_command(session, "false")
+    assert cli_scp._exec_shell_command(session, "true")["data"] == "done"
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._exec_shell_command(session, "sleep 10")
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._exec_shell_command(session, "false")
 
 
 @pytest.mark.parametrize(
@@ -818,15 +818,15 @@ def test_exec_shell_command_reports_running_and_failed_commands(monkeypatch) -> 
     ["/abs/path.txt", "../escape.txt", "nested/../../escape.txt"],
 )
 def test_extract_archive_rejects_unsafe_member_paths(tmp_path, member_name) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     member = tarfile.TarInfo(member_name)
     member.size = 4
     archive = tmp_path / "unsafe.tar"
     archive.write_bytes(_tar_bytes_with_member(member, b"data"))
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._extract_archive(archive, download_dir=tmp_path, overwrite=True)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._extract_archive(archive, download_dir=tmp_path, overwrite=True)
 
 
 @pytest.mark.parametrize("link_type", [tarfile.SYMTYPE, tarfile.LNKTYPE])
@@ -834,7 +834,7 @@ def test_extract_archive_rejects_links_and_invalid_archive(
     tmp_path,
     link_type,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     link = tarfile.TarInfo("link")
     link.type = link_type
@@ -842,36 +842,36 @@ def test_extract_archive_rejects_links_and_invalid_archive(
     archive = tmp_path / "link.tar"
     archive.write_bytes(_tar_bytes_with_member(link))
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._extract_archive(archive, download_dir=tmp_path, overwrite=True)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._extract_archive(archive, download_dir=tmp_path, overwrite=True)
 
     invalid = tmp_path / "invalid.tar"
     invalid.write_text("not a tar", encoding="utf-8")
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._extract_archive(invalid, download_dir=tmp_path, overwrite=True)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._extract_archive(invalid, download_dir=tmp_path, overwrite=True)
 
 
 def test_extract_archive_rejects_special_member_types(tmp_path) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     fifo = tarfile.TarInfo("pipe")
     fifo.type = tarfile.FIFOTYPE
     archive = tmp_path / "fifo.tar"
     archive.write_bytes(_tar_bytes_with_member(fifo))
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._extract_archive(archive, download_dir=tmp_path, overwrite=True)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._extract_archive(archive, download_dir=tmp_path, overwrite=True)
 
 
 def test_extract_archive_skips_current_directory_and_streams_file(tmp_path) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     archive = tmp_path / "download.tar"
     archive.write_bytes(_tar_bytes({"./": b"", "nested/file.txt": b"content"}))
     destination = tmp_path / "out"
     destination.mkdir()
 
-    cli_file._extract_archive(archive, download_dir=destination, overwrite=True)
+    cli_scp._extract_archive(archive, download_dir=destination, overwrite=True)
 
     assert (destination / "nested" / "file.txt").read_bytes() == b"content"
 
@@ -879,7 +879,7 @@ def test_extract_archive_skips_current_directory_and_streams_file(tmp_path) -> N
 def test_extract_archive_can_reject_existing_file_when_overwrite_disabled(
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     archive = tmp_path / "download.tar"
     archive.write_bytes(_tar_bytes({"same.txt": b"new"}))
@@ -887,41 +887,41 @@ def test_extract_archive_can_reject_existing_file_when_overwrite_disabled(
     destination.mkdir()
     (destination / "same.txt").write_text("old", encoding="utf-8")
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._extract_archive(archive, download_dir=destination, overwrite=False)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._extract_archive(archive, download_dir=destination, overwrite=False)
 
 
 def test_copy_downloaded_source_rejects_parent_type_and_missing_source(
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     source_file = tmp_path / "source.txt"
     source_file.write_text("source", encoding="utf-8")
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._copy_downloaded_source(source_file, tmp_path / "missing" / "out.txt")
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._copy_downloaded_source(source_file, tmp_path / "missing" / "out.txt")
 
     existing_file = tmp_path / "target"
     existing_file.write_text("target", encoding="utf-8")
     source_dir = tmp_path / "source-dir"
     source_dir.mkdir()
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._copy_downloaded_source(source_dir, existing_file)
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._copy_downloaded_source(source_dir, existing_file)
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._copy_downloaded_source(tmp_path / "missing-source", tmp_path / "out")
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._copy_downloaded_source(tmp_path / "missing-source", tmp_path / "out")
 
 
 def test_copy_downloaded_source_rejects_missing_explicit_directory_destination(
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     source_file = tmp_path / "source.txt"
     source_file.write_text("source", encoding="utf-8")
 
-    with pytest.raises(cli_file.typer.Exit):
-        cli_file._copy_downloaded_source(
+    with pytest.raises(cli_scp.typer.Exit):
+        cli_scp._copy_downloaded_source(
             source_file,
             tmp_path / "missing-dir",
             destination_is_directory=True,
@@ -930,11 +930,11 @@ def test_copy_downloaded_source_rejects_missing_explicit_directory_destination(
 
 def test_scp_command_defensive_operand_type_checks(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_resolve_scp_operands",
         lambda *_args: ("upload", "/not-a-path", "/tmp/out"),
     )
@@ -946,7 +946,7 @@ def test_scp_command_defensive_operand_type_checks(monkeypatch, tmp_path) -> Non
     assert "Invalid resolved upload operands" in result.output
 
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_resolve_scp_operands",
         lambda *_args: ("download", "/tmp/in", "/not-a-path"),
     )
@@ -962,29 +962,29 @@ def test_upload_scp_source_cleans_remote_archive_on_shell_error(
     monkeypatch,
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     source = tmp_path / "input.txt"
     source.write_text("content", encoding="utf-8")
     events = []
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_upload_remote_file",
         lambda *_args, **_kwargs: events.append("uploaded"),
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_exec_shell_command",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("copy failed")),
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_cleanup_remote_file",
         lambda *_args, **_kwargs: events.append("cleaned"),
     )
 
     with pytest.raises(RuntimeError):
-        cli_file._upload_scp_source(
+        cli_scp._upload_scp_source(
             {"endpoint": "https://sandbox.example.com"},
             source=source,
             destination="/tmp/input.txt",
@@ -997,35 +997,35 @@ def test_upload_scp_source_cleans_remote_archive_on_ambiguous_upload_error(
     monkeypatch,
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     source = tmp_path / "input.txt"
     source.write_text("content", encoding="utf-8")
     events = []
     local_archives = []
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_new_remote_archive_path",
         lambda _prefix: "/tmp/agentkit-upload-fixed.tar",
     )
 
     def fail_upload(*_args, **kwargs):
         local_archives.append(kwargs["local_path"])
-        raise cli_file.requests.ConnectionError("connection reset")
+        raise cli_scp.requests.ConnectionError("connection reset")
 
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_upload_remote_file",
         fail_upload,
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_cleanup_remote_file",
         lambda _session, remote_path: events.append(remote_path),
     )
 
-    with pytest.raises(cli_file.requests.ConnectionError):
-        cli_file._upload_scp_source(
+    with pytest.raises(cli_scp.requests.ConnectionError):
+        cli_scp._upload_scp_source(
             {"endpoint": "https://sandbox.example.com"},
             source=source,
             destination="/tmp/input.txt",
@@ -1040,28 +1040,28 @@ def test_download_scp_source_cleans_archive_when_archive_command_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     events = []
-    monkeypatch.setattr(cli_file, "_remote_source_type", lambda *_args: "file")
+    monkeypatch.setattr(cli_scp, "_remote_source_type", lambda *_args: "file")
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_new_remote_archive_path",
         lambda _prefix: "/tmp/agentkit-download-fixed.tar",
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_exec_shell_command",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("tar failed")),
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_cleanup_remote_file",
         lambda _session, remote_path: events.append(remote_path),
     )
 
     with pytest.raises(RuntimeError, match="tar failed"):
-        cli_file._download_scp_source(
+        cli_scp._download_scp_source(
             {"endpoint": "https://sandbox.example.com"},
             source="/tmp/input.txt",
             destination=tmp_path / "output.txt",
@@ -1074,35 +1074,35 @@ def test_download_scp_source_cleans_archive_when_download_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     events = []
-    monkeypatch.setattr(cli_file, "_remote_source_type", lambda *_args: "file")
+    monkeypatch.setattr(cli_scp, "_remote_source_type", lambda *_args: "file")
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_new_remote_archive_path",
         lambda _prefix: "/tmp/agentkit-download-fixed.tar",
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_exec_shell_command",
         lambda *_args, **_kwargs: {"success": True, "data": {"exit_code": 0}},
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_download_remote_file",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            cli_file.requests.ConnectionError("download interrupted")
+            cli_scp.requests.ConnectionError("download interrupted")
         ),
     )
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_cleanup_remote_file",
         lambda _session, remote_path: events.append(remote_path),
     )
 
-    with pytest.raises(cli_file.requests.ConnectionError, match="download interrupted"):
-        cli_file._download_scp_source(
+    with pytest.raises(cli_scp.requests.ConnectionError, match="download interrupted"):
+        cli_scp._download_scp_source(
             {"endpoint": "https://sandbox.example.com"},
             source="/tmp/input.txt",
             destination=tmp_path / "output.txt",
@@ -1112,15 +1112,15 @@ def test_download_scp_source_cleans_archive_when_download_fails(
 
 
 def test_cleanup_remote_file_warns_without_raising(monkeypatch, capsys) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_exec_shell_command",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
     )
 
-    cli_file._cleanup_remote_file(
+    cli_scp._cleanup_remote_file(
         {"endpoint": "https://sandbox.example.com"},
         "/tmp/archive.tar",
     )
@@ -1130,16 +1130,16 @@ def test_cleanup_remote_file_warns_without_raising(monkeypatch, capsys) -> None:
 
 def test_scp_reports_transport_error_without_traceback(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
-    _patch_session(monkeypatch, tmp_path, cli_file)
+    _patch_session(monkeypatch, tmp_path, cli_scp)
     source = tmp_path / "input.txt"
     source.write_text("content", encoding="utf-8")
     monkeypatch.setattr(
-        cli_file,
+        cli_scp,
         "_upload_scp_source",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            cli_file.requests.ConnectionError("network unavailable")
+            cli_scp.requests.ConnectionError("network unavailable")
         ),
     )
 
@@ -1157,16 +1157,16 @@ def test_create_sources_upload_archive_removes_temp_file_on_tar_error(
     monkeypatch,
     tmp_path,
 ) -> None:
-    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+    import agentkit.toolkit.cli.sandbox.cli_scp as cli_scp
 
     source = tmp_path / "input.txt"
     source.write_text("content", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli_file.tarfile,
+        cli_scp.tarfile,
         "open",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(tarfile.TarError("boom")),
     )
 
     with pytest.raises(tarfile.TarError):
-        cli_file._create_sources_upload_archive([source])
+        cli_scp._create_sources_upload_archive([source])

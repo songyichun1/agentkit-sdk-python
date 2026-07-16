@@ -23,7 +23,7 @@ from agentkit.toolkit.cli.sandbox.cli_config import config_command
 from agentkit.toolkit.cli.sandbox.cli_create import create_command
 from agentkit.toolkit.cli.sandbox.cli_delete import delete_command
 from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
-from agentkit.toolkit.cli.sandbox.cli_file import scp_command
+from agentkit.toolkit.cli.sandbox.cli_scp import scp_command
 from agentkit.toolkit.cli.sandbox.cli_list import list_command
 from agentkit.toolkit.cli.sandbox.cli_invoke import invoke_command
 from agentkit.toolkit.cli.sandbox.cli_init import init_command
