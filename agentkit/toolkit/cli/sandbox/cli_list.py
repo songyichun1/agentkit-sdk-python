@@ -28,8 +28,10 @@ from agentkit.toolkit.cli.sandbox.config_store import (
     configured_sandbox_config,
 )
 from agentkit.toolkit.cli.sandbox.session_create import SANDBOX_TOOL_ID_ENV
-from agentkit.toolkit.cli.sandbox.session_sync import sync_remote_sessions
-from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
+from agentkit.toolkit.cli.sandbox.tool_resolve import (
+    SandboxToolType,
+    resolve_existing_sandbox_tool_id,
+)
 from agentkit.toolkit.cli.sandbox.sandbox_client import (
     echo_json,
     error,
@@ -50,6 +52,52 @@ def _session_not_found_result(
     }
 
 
+def _resolve_list_tool_id(
+    *,
+    tool_id: Optional[str],
+    tool_name: Optional[str],
+    tool_type: SandboxToolType,
+    resolve_current: bool = False,
+) -> str | None:
+    explicit_tool_id = (tool_id or "").strip()
+    explicit_tool_name = (tool_name or "").strip()
+    if tool_name is not None and not explicit_tool_name:
+        error("--tool-name cannot be empty")
+    if explicit_tool_id and explicit_tool_name:
+        error("Specify only one of --tool-id or --tool-name.")
+    if explicit_tool_id:
+        return explicit_tool_id
+    if explicit_tool_name:
+        return resolve_existing_sandbox_tool_id(
+            tool_id=None,
+            tool_name=explicit_tool_name,
+            tool_type=tool_type,
+            client=AgentkitToolsClient(),
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
+    if resolve_current:
+        return resolve_existing_sandbox_tool_id(
+            tool_id=None,
+            tool_name=None,
+            tool_type=tool_type,
+            client=AgentkitToolsClient(),
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
+    return None
+
+
+def _filter_sessions_by_tool(
+    sessions: dict[str, object],
+    tool_id: str | None,
+) -> dict[str, object]:
+    if not tool_id:
+        return sessions
+    tool_sessions = sessions.get(tool_id)
+    if not isinstance(tool_sessions, dict):
+        return {}
+    return {tool_id: tool_sessions}
+
+
 def list_command(
     ctx: typer.Context,
     session_id: Optional[str] = typer.Option(
@@ -58,14 +106,13 @@ def list_command(
         "--sid",
         "-s",
         help=(
-            "Sandbox session ID to look up. Omit to return all local "
-            "sandbox sessions after syncing the current tool."
+            "Sandbox session ID to look up. Omit to return all local sandbox sessions."
         ),
     ),
     tool_id: Optional[str] = typer.Option(
         None,
         "--tool-id",
-        help=f"Sandbox tool ID. Defaults to {SANDBOX_TOOL_ID_ENV}.",
+        help="Sandbox tool ID used to filter local sessions.",
     ),
     tool_name: Optional[str] = typer.Option(
         None,
@@ -75,17 +122,17 @@ def list_command(
     tool_type: SandboxToolType = typer.Option(
         SandboxToolType.CODE_ENV,
         "--tool-type",
-        help="Sandbox tool type to resolve when tool id/name is omitted.",
+        help="Sandbox tool type to resolve --tool-name.",
     ),
 ) -> None:
-    """List sandbox sessions after syncing remote sessions for the current tool."""
+    """List locally cached sandbox sessions."""
     try:
         config_defaults = configured_sandbox_config()
-        session_id = config_default_if_unprovided(
-            ctx, "session_id", "session-id", session_id, data=config_defaults
-        )
         tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
-            ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
+            ctx,
+            tool_id=tool_id,
+            tool_name=tool_name,
+            data=config_defaults,
         )
         tool_type = config_default_if_unprovided(
             ctx,
@@ -95,13 +142,11 @@ def list_command(
             data=config_defaults,
             transform=SandboxToolType,
         )
-        resolved_tool_id = sync_remote_sessions(
-            session_id=session_id,
+        resolved_tool_id = _resolve_list_tool_id(
             tool_id=tool_id,
             tool_name=tool_name,
             tool_type=tool_type,
-            client=AgentkitToolsClient(),
-            env_var_name=SANDBOX_TOOL_ID_ENV,
+            resolve_current=True,
         )
         result = (
             find_session_result(resolved_tool_id, session_id)
@@ -109,7 +154,10 @@ def list_command(
             else None
         )
         if not session_id:
-            result = get_all_session_results()
+            result = _filter_sessions_by_tool(
+                get_all_session_results(),
+                resolved_tool_id,
+            )
     except typer.Exit:
         raise
     except (SandboxConfigError, ValueError) as exc:

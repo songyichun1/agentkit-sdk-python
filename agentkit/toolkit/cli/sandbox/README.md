@@ -275,35 +275,36 @@ snapshot-disabled.
 
 ### List
 
-Sync sessions for the current tool, then read sandbox sessions from the local
-session store.
+Read sandbox sessions from the local session store.
 
 ```bash
 agentkit sandbox list --session-id 123456789
+agentkit sandbox list --tool-id t-example
+agentkit sandbox list --tool-name demo-tool
 agentkit sandbox list
 ```
 
 Options:
 
-- `--session-id` / `--sid` / `-s`: optional. Sandbox session ID to look up. If omitted, the CLI
-  returns all records from `.agentkit/sandbox/sessions.json` after syncing the
-  current tool.
-- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If neither is
-  set, the CLI resolves an existing tool by `--tool-type`.
+- `--session-id` / `--sid` / `-s`: optional. Sandbox session ID to look up.
+  If omitted, the CLI returns local records from
+  `.agentkit/sandbox/sessions.json`.
+- `--tool-id`: optional. Filters local records to the specified sandbox tool.
+- `--tool-name`: optional. Resolves a sandbox tool by name, then filters local
+  records to the resolved tool.
 - `--tool-type`: optional. `CodeEnv` or `SkillEnv`; defaults to `CodeEnv`.
-  Used when resolving the current tool after `--tool-id` and
-  `AGENTKIT_SANDBOX_TOOL_ID` are both absent.
+  Used when resolving the current tool.
 
-Before returning, `list` calls `ListSessions` for the resolved tool and follows
-`NextToken` until all pages are loaded. The returned remote sessions replace
-the same tool's records in `.agentkit/sandbox/sessions.json`; records for other
-tools are preserved. Sessions whose `UserSessionId` is empty are ignored because
-they were not created through this CLI's session flow. When `--session-id` is
-omitted and no existing tool can be resolved, the command skips remote sync and
-returns the current local store, or `{}` if the store does not exist.
+`list` first resolves the current tool from explicit options, sandbox config,
+`AGENTKIT_SANDBOX_TOOL_ID`, cached tool data, or existing tools. It does not call
+`ListSessions` and does not update `.agentkit/sandbox/sessions.json`. When
+`--session-id` is omitted and a tool is resolved, `list` returns only local
+records for that tool. If no tool can be resolved, it returns all local records.
+When `--session-id` is provided, the CLI resolves the current tool before looking
+up that session in the local store.
 
-When `--session-id` is provided but the session is not found after sync, the
-command exits with status `1` and returns structured JSON:
+When `--session-id` is provided but the session is not found in the local store,
+the command exits with status `1` and returns structured JSON:
 
 ```json
 {
@@ -469,20 +470,18 @@ agentkit sandbox mount --session-id 123456789
 Options:
 
 - `--session-id` / `--sid` / `-s`: required. Sandbox session ID to mount.
-- `--oauth-url`: optional. Base URL used to fetch
-  `/.well-known/agentkit-cli`. If omitted, the CLI uses the newest file under
-  `~/.agentkit/auth/sessions/`, validates the file name matches
-  `agentkit-cli-*volces.com.json`, removes the `.json` suffix, and uses that as
-  the OAuth URL.
+- `--tool-id`: optional. Sandbox tool ID. Defaults to sandbox config, env, or
+  cached tool.
+- `--tool-name`: optional. Sandbox tool name. Used only when `--tool-id` is
+  omitted.
+- `--oauth-url`: optional. OAuth profile URL. If omitted, the CLI reads the
+  active profile from `~/.agentkit/auth/active_profile`; when provided, it reads
+  the matching local profile without network discovery.
 
-The CLI reads `tool_id` from `.agentkit/sandbox/sessions.json` by
-`--session-id`. If the session is not found locally, it syncs sessions for the
-current tool using the same resolution behavior as `agentkit sandbox list`, then
-checks the local session store again. After resolving the tool, the CLI calls
-`GetTool` and reads the bucket from `TosMountConfig.MountPoints[].BucketName`;
-if the tool has no TOS mount, the command exits with an error. The discovery
-document is saved to `.agentkit/sandbox/agentkit-cli`. The CLI extracts
-`role_trn`, `client_id`, and the user pool ID from `issuer`, then runs
+After resolving the tool, the CLI calls `GetTool` and reads the bucket from
+`TosMountConfig.MountPoints[].BucketName`; if the tool has no TOS mount, the
+command exits with an error. The CLI extracts `role_trn`, `client_id`, and the
+user pool ID from `issuer`, then runs
 `open "<command>"`, where `command` is the generated `tosbrowser://...` URL.
 The response is JSON:
 
