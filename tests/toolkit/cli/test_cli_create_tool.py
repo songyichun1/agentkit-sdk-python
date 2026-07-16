@@ -1581,6 +1581,48 @@ def test_create_command_rejects_non_ark_model_base_url_without_model_provider(
     assert _FakeToolsClient.instances == []
 
 
+def test_create_command_rejects_cli_model_base_url_with_configured_provider(
+    monkeypatch,
+    sandbox_config_path,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    sandbox_config_path.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_config_path.write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: model_square",
+                "  base_url: https://ark.cn-beijing.volces.com/api/v3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--model-base-url",
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "--model-base-url requires --model-provider for non-Ark base URLs"
+        in result.output
+    )
+    assert _FakeToolsClient.instances == []
+
+
 def test_create_command_accepts_model_base_url_with_model_name_and_provider(
     monkeypatch,
 ):

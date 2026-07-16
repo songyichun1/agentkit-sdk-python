@@ -55,6 +55,7 @@ from agentkit.toolkit.cli.sandbox.model_config import (
     build_codex_hot_update_command,
     build_codex_hot_update_env,
     normalize_model_base_url,
+    validate_model_provider_base_url,
 )
 from agentkit.toolkit.cli.sandbox.tool_resolve import (
     SandboxToolType,
@@ -680,7 +681,15 @@ def exec_command(
         copy_specs = _collect_copy_specs(ctx, copy)
         model_api_key_was_provided = param_was_provided(ctx, "model_api_key")
         model_name_was_provided = param_was_provided(ctx, "model_name")
+        model_provider_was_provided = param_was_provided(ctx, "model_provider")
         model_base_url_was_provided = param_was_provided(ctx, "model_base_url")
+        resolved_model_base_url = normalize_model_base_url(model_base_url)
+        validate_model_provider_base_url(
+            model_provider=model_provider,
+            model_base_url=resolved_model_base_url,
+            model_provider_was_provided=model_provider_was_provided,
+            model_base_url_was_provided=model_base_url_was_provided,
+        )
         resolved_model_provider = _resolve_exec_model_provider(
             session_id=session_id,
             tool_id=tool_id,
@@ -688,8 +697,6 @@ def exec_command(
             model_name=model_name,
             model_provider=model_provider,
         )
-        explicit_model_provider = bool((model_provider or "").strip())
-        resolved_model_base_url = normalize_model_base_url(model_base_url)
 
         resolved_tool_id = (tool_id or "").strip()
         ws_config = get_tool_websearch_config(
@@ -716,7 +723,7 @@ def exec_command(
                 model_api_key=model_api_key,
                 model_provider=resolved_model_provider,
                 model_base_url=resolved_model_base_url,
-                model_provider_was_provided=explicit_model_provider,
+                model_provider_was_provided=model_provider_was_provided,
                 model_base_url_was_provided=model_base_url_was_provided,
                 include_codex_config=tool_type == SandboxToolType.CODE_ENV,
                 disable_websearch_apikey=disable_websearch,

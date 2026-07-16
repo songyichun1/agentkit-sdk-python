@@ -5735,6 +5735,7 @@ def test_cli_exec_model_name_without_provider_syncs_codex_config(
 
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
     store_path = _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
     stored_session = {
         "session_id": "user-1",
         "tool_id": "tool-1",
@@ -6113,6 +6114,41 @@ def test_cli_exec_rejects_non_ark_model_base_url_without_model_provider() -> Non
             "custom-model",
             "--model-base-url",
             "https://models.example.com/v1",
+            "--command",
+            "echo should-not-run; exit",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "--model-base-url requires --model-provider for non-Ark base URLs"
+        in result.output
+    )
+
+
+def test_cli_exec_rejects_cli_model_base_url_with_configured_provider(tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: model_square",
+                "  base_url: https://ark.cn-beijing.volces.com/api/v3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--model-base-url",
+            "https://open.bigmodel.cn/api/coding/paas/v4",
             "--command",
             "echo should-not-run; exit",
         ],

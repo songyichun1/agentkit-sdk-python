@@ -37,6 +37,7 @@ from agentkit.toolkit.cli.sandbox.config_store import (
     get_legacy_sandbox_config_path,
     configured_sandbox_config,
     load_legacy_sandbox_image_defaults,
+    param_was_provided,
     save_created_tool_config,
 )
 from agentkit.toolkit.cli.sandbox.env_config import (
@@ -455,6 +456,8 @@ def create_tool(
     model_api_key: Optional[str] = None,
     model_provider: str | ModelProviderType | None = None,
     model_base_url: Optional[str] = None,
+    model_provider_was_provided: Optional[bool] = None,
+    model_base_url_was_provided: Optional[bool] = None,
     skill_role_name: Optional[str] = None,
     skill_role_name_provided: bool = False,
     websearch_apikey: Optional[str] = None,
@@ -476,6 +479,16 @@ def create_tool(
         resolved_model_base_url
     )
     resolved_model_provider = normalize_model_provider(effective_model_provider)
+    resolved_model_provider_was_provided = (
+        bool((raw_model_provider or "").strip())
+        if model_provider_was_provided is None
+        else model_provider_was_provided
+    )
+    resolved_model_base_url_was_provided = (
+        bool(resolved_model_base_url)
+        if model_base_url_was_provided is None
+        else model_base_url_was_provided
+    )
     region = _resolve_region(SANDBOX_REGION_ENV, "agentkit")
     tos_region = _resolve_region(SANDBOX_TOS_REGION_ENV, "tos")
 
@@ -500,8 +513,8 @@ def create_tool(
         model_api_key=model_api_key,
         model_provider=effective_model_provider,
         model_base_url=resolved_model_base_url,
-        model_provider_was_provided=bool((raw_model_provider or "").strip()),
-        model_base_url_was_provided=bool(resolved_model_base_url),
+        model_provider_was_provided=resolved_model_provider_was_provided,
+        model_base_url_was_provided=resolved_model_base_url_was_provided,
         role_name=resolved_role_name,
         websearch_apikey=resolved_websearch_apikey,
         image_url=image_url,
@@ -764,6 +777,8 @@ def create_command(
         )
         if tos_mount is not None and not (tos_bucket or "").strip():
             error("--tos-mount requires --tos-bucket")
+        model_provider_was_provided = param_was_provided(ctx, "model_provider")
+        model_base_url_was_provided = param_was_provided(ctx, "model_base_url")
         result = create_tool(
             tool_type=tool_type,
             tool_name=tool_name,
@@ -774,6 +789,8 @@ def create_command(
             model_api_key=model_api_key,
             model_provider=model_provider,
             model_base_url=model_base_url,
+            model_provider_was_provided=model_provider_was_provided,
+            model_base_url_was_provided=model_base_url_was_provided,
             skill_role_name=skill_role_name,
             skill_role_name_provided=skill_role_name_provided,
             websearch_apikey=websearch_apikey,
