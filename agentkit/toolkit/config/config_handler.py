@@ -98,6 +98,7 @@ class ConfigParamHandler:
         cr_namespace_name: Optional[str],
         cr_repo_name: Optional[str],
         cr_auto_create_instance_type: Optional[str],
+        project_name: Optional[str],
         runtime_name: Optional[str],
         runtime_role_name: Optional[str],
         runtime_apikey_name: Optional[str],
@@ -178,6 +179,8 @@ class ConfigParamHandler:
             strategy_params["cr_auto_create_instance_type"] = (
                 cr_auto_create_instance_type
             )
+        if project_name is not None:
+            strategy_params["project_name"] = project_name
         if runtime_name is not None:
             strategy_params["runtime_name"] = runtime_name
         if runtime_role_name is not None:

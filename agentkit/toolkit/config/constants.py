@@ -24,6 +24,7 @@ from pathlib import Path
 # Auto-creation resource identifier
 AUTO_CREATE_VE = "Auto"
 DEFAULT_WORKSPACE_NAME = "agentkit-cli-workspace"
+DEFAULT_RUNTIME_PROJECT_NAME = "default"
 DEFAULT_CR_NAMESPACE = "agentkit"
 DEFAULT_CR_INSTANCE_TEMPLATE_NAME = "agentkit-platform-{{account_id}}"
 DEFAULT_TOS_BUCKET_TEMPLATE_NAME = "agentkit-platform-{{account_id}}"

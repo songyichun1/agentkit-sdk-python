@@ -131,6 +131,12 @@ def config_command(
         help="CR instance type when auto-creating: Micro/Enterprise",
     ),
     # Runtime configuration parameters
+    project_name: Optional[str] = typer.Option(
+        None,
+        "--project_name",
+        "--project-name",
+        help="Volcano Engine project for the Runtime",
+    ),
     runtime_name: Optional[str] = typer.Option(
         None, "--runtime_name", "--ve_runtime_name", help="Runtime instance name"
     ),
@@ -323,6 +329,7 @@ def config_command(
             cr_namespace_name=cr_namespace_name,
             cr_repo_name=cr_repo_name,
             cr_auto_create_instance_type=cr_auto_create_instance_type,
+            project_name=project_name,
             runtime_name=runtime_name,
             runtime_role_name=runtime_role_name,
             runtime_apikey_name=runtime_apikey_name,

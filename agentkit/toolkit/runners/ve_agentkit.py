@@ -26,6 +26,7 @@ from agentkit.toolkit.config import (
     AUTO_CREATE_VE,
     AUTH_TYPE_KEY_AUTH,
     AUTH_TYPE_CUSTOM_JWT,
+    DEFAULT_RUNTIME_PROJECT_NAME,
     is_valid_config,
     is_invalid_config,
 )
@@ -49,7 +50,6 @@ import agentkit.sdk.runtime.types as runtime_types
 
 ARTIFACT_TYPE_DOCKER_IMAGE = "image"
 API_KEY_LOCATION = "HEADER"
-PROJECT_NAME_DEFAULT = "default"
 RUNTIME_STATUS_READY = "Ready"
 RUNTIME_STATUS_ERROR = "Error"
 RUNTIME_STATUS_UPDATING = "Updating"
@@ -67,6 +67,10 @@ class VeAgentkitRunnerConfig(AutoSerializableMixin):
     )
 
     # Runtime configuration
+    project_name: str = field(
+        default=DEFAULT_RUNTIME_PROJECT_NAME,
+        metadata={"description": "Volcano Engine project for the Runtime"},
+    )
     runtime_id: str = field(
         default=AUTO_CREATE_VE,
         metadata={"description": "Runtime ID; 'Auto' means auto-create"},
@@ -773,7 +777,7 @@ class VeAgentkitRuntimeRunner(Runner):
                 ),
                 network_configuration=network_configuration,
                 envs=envs,
-                project_name=PROJECT_NAME_DEFAULT,
+                project_name=config.project_name,
                 authorizer_configuration=authorizer_config,
                 client_token=generate_client_token(),
                 apmplus_enable=True,
