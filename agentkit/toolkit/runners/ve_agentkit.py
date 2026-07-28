@@ -33,7 +33,7 @@ from agentkit.toolkit.config import (
 from agentkit.toolkit.config.dataclass_utils import AutoSerializableMixin
 from agentkit.toolkit.models import DeployResult, InvokeResult, StatusResult
 from agentkit.toolkit.reporter import Reporter
-from agentkit.toolkit.errors import ErrorCode
+from agentkit.toolkit.errors import ConfigError, ErrorCode
 from agentkit.utils.misc import (
     generate_runtime_name,
     generate_runtime_role_name,
@@ -173,6 +173,21 @@ class VeAgentkitRuntimeRunner(Runner):
     def _get_runtime_client(self, region: str = "") -> AgentkitRuntimeClient:
         return AgentkitRuntimeClient(region=region or "")
 
+    @staticmethod
+    def _get_runtime_for_project(
+        client: AgentkitRuntimeClient, runtime_id: str, project_name: str
+    ) -> runtime_types.GetRuntimeResponse:
+        runtime = client.get_runtime(
+            runtime_types.GetRuntimeRequest(runtime_id=runtime_id)
+        )
+        actual_project_name = getattr(runtime, "project_name", None)
+        if actual_project_name and actual_project_name != project_name:
+            raise ConfigError(
+                f"Runtime {runtime_id} belongs to project '{actual_project_name}', "
+                f"not '{project_name}'."
+            )
+        return runtime
+
     def deploy(self, config: VeAgentkitRunnerConfig) -> DeployResult:
         """Deploy Runtime.
 
@@ -244,6 +259,9 @@ class VeAgentkitRuntimeRunner(Runner):
                 return True
 
             client = self._get_runtime_client(config.region)
+            self._get_runtime_for_project(
+                client, runner_config.runtime_id, runner_config.project_name
+            )
             client.delete_runtime(
                 runtime_types.DeleteRuntimeRequest(runtime_id=runner_config.runtime_id)
             )
@@ -284,8 +302,8 @@ class VeAgentkitRuntimeRunner(Runner):
                 )
 
             client = self._get_runtime_client(config.region)
-            runtime = client.get_runtime(
-                runtime_types.GetRuntimeRequest(runtime_id=runner_config.runtime_id)
+            runtime = self._get_runtime_for_project(
+                client, runner_config.runtime_id, runner_config.project_name
             )
 
             # Only fetch API key for key_auth mode
@@ -371,6 +389,7 @@ class VeAgentkitRuntimeRunner(Runner):
                 ),
                 metadata={
                     "runtime_id": runner_config.runtime_id,
+                    "project_name": runner_config.project_name,
                     "runtime_name": runtime.name
                     if hasattr(runtime, "name")
                     else runner_config.runtime_name,
@@ -383,6 +402,14 @@ class VeAgentkitRuntimeRunner(Runner):
                 },
             )
 
+        except ConfigError as e:
+            return StatusResult(
+                success=False,
+                status="error",
+                error=str(e),
+                error_code=e.error_code,
+                metadata={"runtime_id": runner_config.runtime_id},
+            )
         except Exception as e:
             logger.error(f"Failed to get Runtime status: {str(e)}")
             if "InvalidAgentKitRuntime.NotFound" in str(e):
@@ -445,10 +472,10 @@ class VeAgentkitRuntimeRunner(Runner):
                 # Auto-fetch Runtime information if not cached
                 try:
                     client = self._get_runtime_client(config.region)
-                    runtime = client.get_runtime(
-                        runtime_types.GetRuntimeRequest(
-                            runtime_id=runner_config.runtime_id
-                        )
+                    runtime = self._get_runtime_for_project(
+                        client,
+                        runner_config.runtime_id,
+                        runner_config.project_name,
                     )
                 except Exception as e:
                     if "NotFound" in str(e):
@@ -555,6 +582,8 @@ class VeAgentkitRuntimeRunner(Runner):
                     success=False, error=error_msg, error_code=ErrorCode.INVOKE_FAILED
                 )
 
+        except ConfigError as e:
+            return InvokeResult(success=False, error=str(e), error_code=e.error_code)
         except Exception as e:
             error_msg = f"Runtime invocation failed: {str(e)}"
             logger.exception("Runtime invocation failed with exception")
@@ -865,6 +894,7 @@ class VeAgentkitRuntimeRunner(Runner):
                 deploy_timestamp=datetime.now(),
                 metadata={
                     "runtime_id": config.runtime_id,
+                    "project_name": config.project_name,
                     "runtime_name": config.runtime_name,
                     "runtime_apikey": config.runtime_apikey,
                     "runtime_apikey_name": config.runtime_apikey_name,
@@ -1136,8 +1166,8 @@ class VeAgentkitRuntimeRunner(Runner):
 
             # Get existing Runtime information
             try:
-                runtime = client.get_runtime(
-                    runtime_types.GetRuntimeRequest(runtime_id=config.runtime_id)
+                runtime = self._get_runtime_for_project(
+                    client, config.runtime_id, config.project_name
                 )
             except Exception as e:
                 if "InvalidAgentKitRuntime.NotFound" in str(e):
@@ -1186,6 +1216,7 @@ class VeAgentkitRuntimeRunner(Runner):
                     deploy_timestamp=datetime.now(),
                     metadata={
                         "runtime_id": config.runtime_id,
+                        "project_name": config.project_name,
                         "runtime_name": config.runtime_name,
                         "runtime_apikey": config.runtime_apikey,
                         "runtime_auth_type": config.runtime_auth_type,
@@ -1331,6 +1362,7 @@ class VeAgentkitRuntimeRunner(Runner):
                 deploy_timestamp=datetime.now(),
                 metadata={
                     "runtime_id": config.runtime_id,
+                    "project_name": config.project_name,
                     "runtime_name": runtime.name
                     if hasattr(runtime, "name")
                     else config.runtime_name,
@@ -1344,6 +1376,13 @@ class VeAgentkitRuntimeRunner(Runner):
                 },
             )
 
+        except ConfigError as e:
+            return DeployResult(
+                success=False,
+                error=str(e),
+                error_code=e.error_code,
+                service_id=config.runtime_id,
+            )
         except Exception as e:
             error_msg = f"Failed to update Runtime: {str(e)}"
             logger.exception("Runtime update failed with exception")
