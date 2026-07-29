@@ -97,7 +97,7 @@ def create_runtime_command(
     name: str = typer.Option(..., "--name", help="Runtime name"),
     role_name: str = typer.Option(..., "--role-name", help="IAM role name"),
     artifact_type: str = typer.Option(
-        ..., "--artifact-type", help="Artifact type (e.g., DockerImage)"
+        ..., "--artifact-type", help="Artifact type (e.g., image)"
     ),
     artifact_url: str = typer.Option(
         ..., "--artifact-url", help="Artifact URL (image URL)"
