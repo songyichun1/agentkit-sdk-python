@@ -92,6 +92,19 @@ def _build_network_for_create_runtime(
     )
 
 
+def _validate_runtime_create_authorizer_options(
+    api_key_name: Optional[str],
+    jwt_discovery_url: Optional[str],
+) -> None:
+    has_api_key_name = bool((api_key_name or "").strip())
+    has_jwt_discovery_url = bool((jwt_discovery_url or "").strip())
+
+    if has_api_key_name == has_jwt_discovery_url:
+        raise ValueError(
+            "Exactly one of --apikey-name or --jwt-discovery-url is required."
+        )
+
+
 @runtime_app.command("create")
 def create_runtime_command(
     name: str = typer.Option(..., "--name", help="Runtime name"),
@@ -137,13 +150,17 @@ def create_runtime_command(
         help="Enable shared internet egress for private network (effective for private/both)",
     ),
     api_key_name: Optional[str] = typer.Option(
-        None, "--apikey-name", help="API key name"
+        None,
+        "--apikey-name",
+        help="API key name (required unless --jwt-discovery-url is provided)",
     ),
     api_key_location: Optional[str] = typer.Option(
         None, "--apikey-location", help="API key location"
     ),
     jwt_discovery_url: Optional[str] = typer.Option(
-        None, "--jwt-discovery-url", help="JWT discovery URL"
+        None,
+        "--jwt-discovery-url",
+        help="JWT discovery URL (required unless --apikey-name is provided)",
     ),
     jwt_allowed_clients: Optional[str] = typer.Option(
         None, "--jwt-allowed-clients", help="JWT allowed clients (comma-separated)"
@@ -168,11 +185,15 @@ def create_runtime_command(
 ):
     """Create a Runtime."""
     try:
-        client = AgentkitRuntimeClient(region=(region or "").strip())
         if json_body:
             payload = json.loads(json_body)
             req = rt.CreateRuntimeRequest(**payload)
         else:
+            _validate_runtime_create_authorizer_options(
+                api_key_name=api_key_name,
+                jwt_discovery_url=jwt_discovery_url,
+            )
+
             authorizer = None
             if any([api_key_name, api_key_location, jwt_discovery_url]):
                 authorizer = rt.AuthorizerForCreateRuntime(
@@ -237,6 +258,7 @@ def create_runtime_command(
                 envs=envs,
                 tags=tags,
             )
+        client = AgentkitRuntimeClient(region=(region or "").strip())
         resp = client.create_runtime(req)
         console.print(
             Panel.fit(

@@ -13,8 +13,51 @@
 # limitations under the License.
 
 import inspect
+from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
+
+
+runner = CliRunner()
+
+
+class _FakeRuntimeClient:
+    instances = []
+    last_request = None
+
+    def __init__(self, **kwargs):
+        self.region = kwargs.get("region", "")
+        _FakeRuntimeClient.instances.append(self)
+
+    def create_runtime(self, request):
+        _FakeRuntimeClient.last_request = request
+        return SimpleNamespace(runtime_id="rt-created")
+
+
+def _runtime_create_args(*extra_args):
+    return [
+        "runtime",
+        "create",
+        "--name",
+        "demo-runtime",
+        "--role-name",
+        "demo-role",
+        "--artifact-type",
+        "image",
+        "--artifact-url",
+        "example.com/demo:latest",
+        *extra_args,
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _fake_runtime_client(monkeypatch):
+    from agentkit.toolkit.cli import cli_runtime
+
+    _FakeRuntimeClient.instances = []
+    _FakeRuntimeClient.last_request = None
+    monkeypatch.setattr(cli_runtime, "AgentkitRuntimeClient", _FakeRuntimeClient)
 
 
 def test_create_runtime_artifact_type_help_uses_image_and_remains_required():
@@ -26,6 +69,110 @@ def test_create_runtime_artifact_type_help_uses_image_and_remains_required():
 
     assert option.default is ...
     assert option.help == "Artifact type (e.g., image)"
+
+
+def test_validate_runtime_create_authorizer_requires_exactly_one_auth_option():
+    from agentkit.toolkit.cli.cli_runtime import (
+        _validate_runtime_create_authorizer_options,
+    )
+
+    with pytest.raises(ValueError):
+        _validate_runtime_create_authorizer_options(
+            api_key_name=None,
+            jwt_discovery_url=None,
+        )
+
+    with pytest.raises(ValueError):
+        _validate_runtime_create_authorizer_options(
+            api_key_name="demo-key",
+            jwt_discovery_url="https://issuer.example.com/.well-known/jwks.json",
+        )
+
+    _validate_runtime_create_authorizer_options(
+        api_key_name="demo-key",
+        jwt_discovery_url=None,
+    )
+    _validate_runtime_create_authorizer_options(
+        api_key_name=None,
+        jwt_discovery_url="https://issuer.example.com/.well-known/jwks.json",
+    )
+
+
+def test_create_runtime_rejects_missing_auth_option_before_client_init():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(app, _runtime_create_args())
+
+    assert result.exit_code == 1
+    assert "Exactly one of --apikey-name or --jwt-discovery-url" in result.output
+    assert "required" in result.output
+    assert _FakeRuntimeClient.instances == []
+    assert _FakeRuntimeClient.last_request is None
+
+
+def test_create_runtime_rejects_conflicting_auth_options_before_client_init():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        _runtime_create_args(
+            "--apikey-name",
+            "demo-key",
+            "--jwt-discovery-url",
+            "https://issuer.example.com/.well-known/jwks.json",
+        ),
+    )
+
+    assert result.exit_code == 1
+    assert "Exactly one of --apikey-name or --jwt-discovery-url" in result.output
+    assert "required" in result.output
+    assert _FakeRuntimeClient.instances == []
+    assert _FakeRuntimeClient.last_request is None
+
+
+def test_create_runtime_accepts_api_key_name_auth():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        _runtime_create_args(
+            "--apikey-name",
+            "demo-key",
+            "--apikey-location",
+            "HEADER",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert _FakeRuntimeClient.last_request.authorizer_configuration is not None
+    authorizer = _FakeRuntimeClient.last_request.authorizer_configuration
+    assert authorizer.key_auth.api_key_name == "demo-key"
+    assert authorizer.key_auth.api_key_location == "HEADER"
+    assert authorizer.custom_jwt_authorizer is None
+
+
+def test_create_runtime_accepts_jwt_discovery_url_auth():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        _runtime_create_args(
+            "--jwt-discovery-url",
+            "https://issuer.example.com/.well-known/jwks.json",
+            "--jwt-allowed-clients",
+            "client-a,client-b",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert _FakeRuntimeClient.last_request.authorizer_configuration is not None
+    authorizer = _FakeRuntimeClient.last_request.authorizer_configuration
+    assert authorizer.key_auth is None
+    assert (
+        authorizer.custom_jwt_authorizer.discovery_url
+        == "https://issuer.example.com/.well-known/jwks.json"
+    )
+    assert authorizer.custom_jwt_authorizer.allowed_clients == ["client-a", "client-b"]
 
 
 def test_build_network_none_when_no_user_intent():
