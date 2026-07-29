@@ -22,6 +22,7 @@ from .constants import (
     DEFAULT_CR_NAMESPACE,
     DEFAULT_IMAGE_TAG,
     DEFAULT_IMAGE_TAG_TEMPLATE,
+    DEFAULT_RUNTIME_PROJECT_NAME,
     DEFAULT_WORKSPACE_NAME,
     DEFAULT_CR_INSTANCE_TEMPLATE_NAME,
     DEFAULT_TOS_BUCKET_TEMPLATE_NAME,
@@ -213,6 +214,10 @@ class HybridStrategyConfig(AutoSerializableMixin):
     )
 
     # Runtime configuration
+    project_name: str = field(
+        default=DEFAULT_RUNTIME_PROJECT_NAME,
+        metadata={"description": "Volcano Engine project for the Runtime"},
+    )
     runtime_id: str = field(
         default="",
         metadata={
@@ -478,6 +483,10 @@ class CloudStrategyConfig(AutoSerializableMixin):
     )
 
     # Runtime configuration for deployed application
+    project_name: str = field(
+        default=DEFAULT_RUNTIME_PROJECT_NAME,
+        metadata={"description": "Volcano Engine project for the Runtime"},
+    )
     runtime_id: str = field(
         default=AUTO_CREATE_VE,
         metadata={

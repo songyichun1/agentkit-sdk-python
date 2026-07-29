@@ -342,6 +342,7 @@ class CloudStrategy(Strategy):
 
         return VeAgentkitRunnerConfig(
             common_config=common_config,
+            project_name=strategy_config.project_name,
             runtime_id=strategy_config.runtime_id,
             runtime_name=strategy_config.runtime_name,
             runtime_role_name=strategy_config.runtime_role_name,

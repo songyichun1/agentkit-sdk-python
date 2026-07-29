@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 
-def test_collect_cli_params_accepts_cloud_provider() -> None:
+def test_collect_cli_params_accepts_cloud_provider_and_project_name() -> None:
     from agentkit.toolkit.config.config_handler import ConfigParamHandler
 
     params = ConfigParamHandler.collect_cli_params(
@@ -37,6 +37,7 @@ def test_collect_cli_params_accepts_cloud_provider() -> None:
         cr_namespace_name=None,
         cr_repo_name=None,
         cr_auto_create_instance_type=None,
+        project_name="lh-test",
         runtime_name=None,
         runtime_role_name=None,
         runtime_apikey_name=None,
@@ -54,6 +55,7 @@ def test_collect_cli_params_accepts_cloud_provider() -> None:
     )
 
     assert params["common"]["cloud_provider"] == "byteplus"
+    assert params["strategy"]["project_name"] == "lh-test"
 
 
 def test_noninteractive_config_updates_project_cloud_provider(tmp_path) -> None:
