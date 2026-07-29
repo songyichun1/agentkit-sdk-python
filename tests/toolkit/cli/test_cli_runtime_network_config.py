@@ -12,7 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
+
 import pytest
+
+
+def test_create_runtime_artifact_type_help_uses_image_and_remains_required():
+    from agentkit.toolkit.cli.cli_runtime import create_runtime_command
+
+    option = (
+        inspect.signature(create_runtime_command).parameters["artifact_type"].default
+    )
+
+    assert option.default is ...
+    assert option.help == "Artifact type (e.g., image)"
 
 
 def test_build_network_none_when_no_user_intent():

@@ -321,7 +321,7 @@ class RuntimeModuleTester(BaseModuleTester):
                 "--role-name",
                 "test-role",
                 "--artifact-type",
-                "DockerImage",
+                "image",
                 "--artifact-url",
                 "test-image:latest",
             ],

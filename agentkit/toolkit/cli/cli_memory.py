@@ -31,6 +31,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
+from agentkit.platform import CloudProvider, VolcConfiguration
 from agentkit.sdk.memory.client import AgentkitMemoryClient
 from agentkit.sdk.memory import types as memory_types
 
@@ -44,6 +45,8 @@ memory_app = typer.Typer(
 
 
 # ---- ProviderType normalization and validation ----
+DEFAULT_PROVIDER_TYPE = "MEM0"
+BYTEPLUS_DEFAULT_PROVIDER_TYPE = "VIKINGDB_MEMORY"
 ALLOWED_PROVIDER_TYPES = {"MEM0", "VIKINGDB_MEMORY"}
 PROVIDER_TYPE_ALIASES = {
     "mem0": "MEM0",
@@ -53,6 +56,10 @@ PROVIDER_TYPE_ALIASES = {
     "vikingdb-memory": "VIKINGDB_MEMORY",
     "VIKINGDB_MEMORY": "VIKINGDB_MEMORY",
 }
+CREATE_PROVIDER_TYPE_HELP = (
+    "Provider type: MEM0 | VIKINGDB_MEMORY. Defaults to MEM0; when cloud provider "
+    "is byteplus, defaults to VIKINGDB_MEMORY and MEM0 is not supported."
+)
 
 
 def _normalize_provider_type(value: Optional[str]) -> str:
@@ -61,7 +68,7 @@ def _normalize_provider_type(value: Optional[str]) -> str:
     Accepts case-insensitive aliases and raises a helpful error on invalid values.
     """
     if not value:
-        return "MEM0"
+        return DEFAULT_PROVIDER_TYPE
     raw = value.strip()
     if raw in ALLOWED_PROVIDER_TYPES:
         return raw
@@ -77,6 +84,22 @@ def _normalize_provider_type(value: Optional[str]) -> str:
         f"Invalid --provider-type '{value}'. Allowed: MEM0, VIKINGDB_MEMORY. "
         "Examples: --provider-type MEM0 | --provider-type vikingdb"
     )
+
+
+def _normalize_create_provider_type(
+    value: Optional[str],
+    cloud_provider: CloudProvider,
+) -> str:
+    if not value and cloud_provider == CloudProvider.BYTEPLUS:
+        return BYTEPLUS_DEFAULT_PROVIDER_TYPE
+
+    normalized = _normalize_provider_type(value)
+    if cloud_provider == CloudProvider.BYTEPLUS and normalized == "MEM0":
+        raise typer.BadParameter(
+            "MEM0 provider type is not supported for BytePlus yet. "
+            "Use --provider-type vikingdb."
+        )
+    return normalized
 
 
 def _validate_collection_name(name: Optional[str]):
@@ -163,7 +186,7 @@ def create_command(
     provider_type: Optional[str] = typer.Option(
         None,
         "--provider-type",
-        help="Provider type: MEM0 | VIKINGDB_MEMORY (default: MEM0)",
+        help=CREATE_PROVIDER_TYPE_HELP,
     ),
     vpc_id: Optional[str] = typer.Option(None, "--vpc-id", help="VPC ID"),
     subnet_ids: Optional[str] = typer.Option(
@@ -202,7 +225,8 @@ def create_command(
 ):
     """Create a managed memory collection."""
     try:
-        client = AgentkitMemoryClient(region=(region or "").strip())
+        resolved_region = (region or "").strip()
+        cloud_provider = VolcConfiguration(region=resolved_region).provider
 
         if json_body:
             payload = json.loads(json_body)
@@ -210,8 +234,9 @@ def create_command(
             if provider_type is not None:
                 payload["ProviderType"] = provider_type
             # Default and normalize if missing or alias
-            payload["ProviderType"] = _normalize_provider_type(
-                payload.get("ProviderType")
+            payload["ProviderType"] = _normalize_create_provider_type(
+                payload.get("ProviderType"),
+                cloud_provider,
             )
             # Validate name and add default strategies if missing
             _validate_collection_name(payload.get("Name"))
@@ -329,12 +354,16 @@ def create_command(
                 name=name,
                 description=description,
                 project_name=project_name,
-                provider_type=_normalize_provider_type(provider_type),
+                provider_type=_normalize_create_provider_type(
+                    provider_type,
+                    cloud_provider,
+                ),
                 long_term_configuration=long_term,
                 vpc_config=vpc,
                 tags=tags,
             )
 
+        client = AgentkitMemoryClient(region=resolved_region)
         resp = client.create_memory_collection(req)
         console.print(
             Panel.fit(
@@ -445,7 +474,9 @@ def provider_types_command():
         table.add_row("VIKINGDB_MEMORY", "vikingdb, vikingdb_memory, vikingdb-memory")
         console.print(table)
         console.print(
-            "Default for create is [bold]MEM0[/bold]. Use --provider-type to override."
+            "Default for create is [bold]MEM0[/bold], or "
+            "[bold]VIKINGDB_MEMORY[/bold] when cloud provider is byteplus. "
+            "MEM0 is not supported on BytePlus."
         )
     except Exception as e:
         console.print(f"[red]Failed to list provider types: {e}[/red]")
