@@ -68,6 +68,12 @@ from agentkit.apps.agent_server_app.origin import (
 )
 from agentkit.apps.agent_server_app.telemetry import telemetry
 from agentkit.apps.base_app import BaseAgentkitApp
+from agentkit.identity import (
+    AgentIdentityMiddleware,
+    IdentityRuntimeConfig,
+    RuntimeIdentity,
+    current_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +213,8 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         app: App | None = None,
         allow_origins: list[str] | None = None,
         allow_origin_regex: str | list[str] | None = None,
+        identity: IdentityRuntimeConfig | RuntimeIdentity | None = None,
+        identity_health_routes: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
 
@@ -285,16 +293,26 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
 
         self.app = get_fast_api_app(**get_fast_api_app_kwargs)
 
+        self.runtime_identity = (
+            RuntimeIdentity(identity)
+            if isinstance(identity, IdentityRuntimeConfig)
+            else identity
+        )
+
         if needs_cors_compat_middleware:
             add_cors_compat_middleware(self.app, resolved_allow_origins)
 
         @self.app.post("/run_sse")
         async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
             logger.info("Overriding run_agent_sse endpoint...")
+            identity_context = current_identity(required=False)
+            effective_user_id = (
+                identity_context.user_sub if identity_context else req.user_id
+            )
             # SSE endpoint
             session = await self.server.session_service.get_session(
                 app_name=req.app_name,
-                user_id=req.user_id,
+                user_id=effective_user_id,
                 session_id=req.session_id,
             )
             if not session:
@@ -313,7 +331,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                     runner = await self.server.get_runner_async(req.app_name)
                     async with Aclosing(
                         runner.run_async(
-                            user_id=req.user_id,
+                            user_id=effective_user_id,
                             session_id=req.session_id,
                             new_message=req.new_message,
                             state_delta=req.state_delta,
@@ -377,6 +395,16 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         # Attach ASGI middleware for unified telemetry across all routes
         self.app.add_middleware(AgentkitTelemetryHTTPMiddleware)
 
+        if self.runtime_identity is not None:
+            # Added after telemetry so identity is the outermost middleware:
+            # invalid requests fail before Agent/ADK code and the child scope no
+            # longer contains the Authorization header.
+            self.app.add_middleware(
+                AgentIdentityMiddleware,
+                identity=self.runtime_identity,
+                public_health_routes=identity_health_routes,
+            )
+
         async def _invoke_compat(request: Request):
             # Use current request span from middleware for telemetry
             span = trace.get_current_span()
@@ -396,7 +424,12 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 text="",
             )
 
-            user_id = headers.get("user_id") or "agentkit_user"
+            identity_context = current_identity(required=False)
+            user_id = (
+                identity_context.user_sub
+                if identity_context
+                else headers.get("user_id") or "agentkit_user"
+            )
             session_id = headers.get("session_id") or ""
 
             # Determine app_name from loader
@@ -483,8 +516,11 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         # Compatibility route for AgentKit CLI invoke
         self.app.add_api_route("/invoke", _invoke_compat, methods=["POST"])
 
-        # Mount A2A server app last to avoid shadowing API routes like `/invoke`.
-        self.app.mount("/", _a2a_server_app)
+        # V1 identity mode does not expose A2A: its payload/session ownership is
+        # not yet bound to the verified OIDC subject. Fail closed instead of
+        # presenting authentication as multi-tenant authorization.
+        if self.runtime_identity is None:
+            self.app.mount("/", _a2a_server_app)
 
     def run(self, host: str, port: int = 8000) -> None:
         """Run the app with Uvicorn server."""
