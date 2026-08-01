@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,18 @@ _ASYMMETRIC_JWT_ALGORITHMS = frozenset(
         "RS512",
     }
 )
+
+
+def _integral_numeric_date(value: Any) -> int | None:
+    """Normalize an RFC 7519 NumericDate without broadening time semantics."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    return None
 
 
 def _is_loopback(hostname: str | None) -> bool:
@@ -346,7 +359,7 @@ class OidcJwtVerifier:
                 leeway=self.clock_skew_seconds,
                 options={"require": ["sub", "iss", "aud", "exp", "iat"]},
             )
-        except jwt.PyJWTError as exc:
+        except (jwt.PyJWTError, TypeError, ValueError, OverflowError) as exc:
             raise IdentityAuthenticationError(
                 "the inbound ID Token failed verification"
             ) from exc
@@ -560,18 +573,16 @@ class WorkloadJwtVerifier:
                 leeway=self.clock_skew_seconds,
                 options={"require": ["sub", "iss", "aud", "exp", "iat", "act"]},
             )
-        except jwt.PyJWTError as exc:
+        except (jwt.PyJWTError, TypeError, ValueError, OverflowError) as exc:
             raise IdentityAuthenticationError(
                 "the workload token failed verification"
             ) from exc
-        issued_at = claims.get("iat")
-        expires_at = claims.get("exp")
-        if (
-            not isinstance(issued_at, int)
-            or not isinstance(expires_at, int)
-            or expires_at <= issued_at
-        ):
+        issued_at = _integral_numeric_date(claims.get("iat"))
+        expires_at = _integral_numeric_date(claims.get("exp"))
+        if issued_at is None or expires_at is None or expires_at <= issued_at:
             raise IdentityAuthenticationError(
                 "the workload token has an invalid lifetime"
             )
+        claims["iat"] = issued_at
+        claims["exp"] = expires_at
         return claims

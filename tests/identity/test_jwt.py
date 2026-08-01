@@ -170,6 +170,71 @@ def test_workload_token_verifier_checks_signature_issuer_and_audience():
         verifier.verify(compact, audience="trn:customer:other-api")
 
 
+def test_workload_token_verifier_normalizes_integral_numeric_dates():
+    issuer = "https://workload.example.com/pool-1"
+    audience = "trn:customer:expense-api"
+    now = int(time.time())
+    verifier = WorkloadJwtVerifier(
+        discovery_url=issuer,
+        expected_issuer=issuer,
+        discovery_document={
+            "issuer": issuer,
+            "jwks_uri": f"{issuer}/.well-known/jwks",
+        },
+        signing_key_resolver=lambda _: PUBLIC_KEY,
+    )
+    compact = jwt.encode(
+        {
+            "sub": "alice",
+            "iss": issuer,
+            "aud": audience,
+            "iat": float(now),
+            "exp": float(now + 300),
+            "act": {"sub": "runtime-1"},
+        },
+        PRIVATE_KEY,
+        algorithm="RS256",
+    )
+
+    claims = verifier.verify(compact, audience=audience)
+
+    assert claims["iat"] == now
+    assert claims["exp"] == now + 300
+    assert isinstance(claims["iat"], int)
+    assert isinstance(claims["exp"], int)
+
+
+@pytest.mark.parametrize("issued_at", [1.5, float("nan"), float("inf"), True])
+def test_workload_token_verifier_rejects_non_integral_numeric_dates(issued_at):
+    issuer = "https://workload.example.com/pool-1"
+    audience = "trn:customer:expense-api"
+    now = int(time.time())
+    compact = jwt.encode(
+        {
+            "sub": "alice",
+            "iss": issuer,
+            "aud": audience,
+            "iat": issued_at,
+            "exp": now + 300,
+            "act": {"sub": "runtime-1"},
+        },
+        PRIVATE_KEY,
+        algorithm="RS256",
+    )
+    verifier = WorkloadJwtVerifier(
+        discovery_url=issuer,
+        expected_issuer=issuer,
+        discovery_document={
+            "issuer": issuer,
+            "jwks_uri": f"{issuer}/.well-known/jwks",
+        },
+        signing_key_resolver=lambda _: PUBLIC_KEY,
+    )
+
+    with pytest.raises(IdentityAuthenticationError):
+        verifier.verify(compact, audience=audience)
+
+
 def test_discovery_issuer_must_match_the_configured_trust_anchor():
     verifier = OidcJwtVerifier(
         discovery_url=ISSUER,
