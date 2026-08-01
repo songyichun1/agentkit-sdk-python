@@ -15,8 +15,56 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: Security tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Checkout requested release tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must use the form vX.Y.Z, got: ${tag}" >&2
+            exit 1
+          fi
+          git fetch --force --tags origin "refs/tags/${tag}:refs/tags/${tag}"
+          git checkout --force "refs/tags/${tag}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[identity-runtime]" pytest
+
+      - name: Run identity and Agent Server security tests
+        run: |
+          python -m pytest -q \
+            tests/identity \
+            tests/apps/test_agent_server_identity_integration.py \
+            tests/apps/test_agent_server_invoke.py \
+            tests/apps/test_agent_server_loader.py
+
   publish:
     name: Build and publish
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
@@ -28,11 +76,13 @@ jobs:
       - name: Resolve release version
         id: version
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag }}"
+            tag="${RELEASE_TAG}"
             git fetch --force --tags origin "refs/tags/${tag}:refs/tags/${tag}"
             git checkout --force "refs/tags/${tag}"
           else
@@ -148,6 +198,39 @@ jobs:
           if failed:
               print(f"Artifact version verification failed: {failed}", file=sys.stderr)
               sys.exit(1)
+          PY
+
+      - name: Verify installed wheel public API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import subprocess
+          import sys
+          import venv
+          from pathlib import Path
+
+          smoke = Path("/tmp/agentkit-wheel-smoke")
+          venv.EnvBuilder(with_pip=True, clear=True).create(smoke)
+          python = smoke / "bin" / "python"
+          wheel = next(Path("dist").glob("agentkit_sdk_python-*.whl"))
+          subprocess.check_call(
+              [str(python), "-m", "pip", "install", f"{wheel}[identity-runtime]"]
+          )
+          subprocess.check_call(
+              [
+                  str(python),
+                  "-I",
+                  "-c",
+                  (
+                      "from agentkit.identity import IdentityRuntimeConfig, "
+                      "RuntimeIdentity; "
+                      "from agentkit.apps import AgentkitAgentServerApp"
+                  ),
+              ]
+          )
           PY
 
       - name: Publish to PyPI

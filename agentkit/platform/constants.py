@@ -56,6 +56,13 @@ SERVICE_METADATA: Dict[str, ServiceMeta] = {
         host_template="open.volcengineapi.com",
         default_version="2023-10-01",
     ),
+    # Agent/Workload Identity data plane. Keep this separate from the legacy
+    # "identity" entry above: signing service, endpoint and API version differ.
+    "agent_identity": ServiceMeta(
+        code="id",
+        host_template="id.{region}.volcengineapi.com",
+        default_version="2025-10-30",
+    ),
     "cr": ServiceMeta(
         code="cr",
         host_template="cr.{region}.volcengineapi.com",

@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import inspect
 import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -68,6 +70,15 @@ from agentkit.apps.agent_server_app.origin import (
 )
 from agentkit.apps.agent_server_app.telemetry import telemetry
 from agentkit.apps.base_app import BaseAgentkitApp
+
+if TYPE_CHECKING:
+    from agentkit_identity import IdentityRuntimeConfig, RuntimeIdentity
+else:
+    # Avoid eagerly importing the bundled security module for ordinary
+    # AgentServer startup. Construction imports and validates the concrete
+    # classes before Identity mode can be enabled.
+    IdentityRuntimeConfig = Any
+    RuntimeIdentity = Any
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +210,21 @@ class AgentKitAgentLoader(BaseAgentLoader):
 
 
 class AgentkitAgentServerApp(BaseAgentkitApp):
+    def _request_identity_context(self) -> Any | None:
+        # Older integrations and focused unit-test doubles predate the
+        # ``runtime_identity`` attribute. Treat an absent attribute exactly as
+        # the existing identity-disabled mode. A real identity-enabled server
+        # always sets the attribute during construction and still fails closed
+        # below when request context binding is unavailable.
+        if getattr(self, "runtime_identity", None) is None:
+            return None
+        identity_current = getattr(self, "_identity_current", None)
+        if identity_current is None:
+            raise RuntimeError("Agent Identity Runtime is not initialized")
+        # Identity-enabled handlers must never fall back to a caller-owned
+        # user_id if middleware composition or context binding is broken.
+        return identity_current(required=True)
+
     def __init__(
         self,
         agent: BaseAgent | App | None = None,
@@ -207,6 +233,8 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         app: App | None = None,
         allow_origins: list[str] | None = None,
         allow_origin_regex: str | list[str] | None = None,
+        identity: IdentityRuntimeConfig | RuntimeIdentity | None = None,
+        identity_health_routes: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
 
@@ -285,16 +313,47 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
 
         self.app = get_fast_api_app(**get_fast_api_app_kwargs)
 
+        identity_middleware_type = None
+        identity_current = None
+        if identity is None:
+            self.runtime_identity = None
+        else:
+            # Identity is an opt-in security feature. Import it only when
+            # configured, but fail closed if the bundled module is broken.
+            from agentkit.identity import (
+                AgentIdentityMiddleware,
+                IdentityRuntimeConfig,
+                RuntimeIdentity,
+                current_identity,
+            )
+
+            if isinstance(identity, IdentityRuntimeConfig):
+                self.runtime_identity = RuntimeIdentity(identity)
+            elif isinstance(identity, RuntimeIdentity):
+                self.runtime_identity = identity
+            else:
+                raise TypeError(
+                    "identity must be an IdentityRuntimeConfig, "
+                    "RuntimeIdentity, or None"
+                )
+            identity_middleware_type = AgentIdentityMiddleware
+            identity_current = current_identity
+        self._identity_current = identity_current
+
         if needs_cors_compat_middleware:
             add_cors_compat_middleware(self.app, resolved_allow_origins)
 
         @self.app.post("/run_sse")
         async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
             logger.info("Overriding run_agent_sse endpoint...")
+            identity_context = AgentkitAgentServerApp._request_identity_context(self)
+            effective_user_id = (
+                identity_context.user_sub if identity_context else req.user_id
+            )
             # SSE endpoint
             session = await self.server.session_service.get_session(
                 app_name=req.app_name,
-                user_id=req.user_id,
+                user_id=effective_user_id,
                 session_id=req.session_id,
             )
             if not session:
@@ -306,6 +365,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
 
             # Convert the events to properly formatted SSE
             async def event_generator():
+                error_payload = None
                 try:
                     stream_mode = (
                         StreamingMode.SSE if req.streaming else StreamingMode.NONE
@@ -313,7 +373,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                     runner = await self.server.get_runner_async(req.app_name)
                     async with Aclosing(
                         runner.run_async(
-                            user_id=req.user_id,
+                            user_id=effective_user_id,
                             session_id=req.session_id,
                             new_message=req.new_message,
                             state_delta=req.state_delta,
@@ -351,11 +411,25 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                                 )
                                 yield f"data: {sse_event}\n\n"
                 except Exception as e:
-                    logger.exception("Error in event_generator: %s", e)
-                    telemetry.trace_agent_server_finish(
-                        path="/run_sse", func_result="", exception=e
-                    )
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    if getattr(self, "runtime_identity", None) is not None:
+                        safe_error = RuntimeError("agent execution failed")
+                        logger.error("Agent execution failed in identity mode")
+                        telemetry.trace_agent_server_finish(
+                            path="/run_sse", func_result="", exception=safe_error
+                        )
+                        error_payload = 'data: {"error":"agent execution failed"}\n\n'
+                    else:
+                        logger.exception("Error in event_generator: %s", e)
+                        telemetry.trace_agent_server_finish(
+                            path="/run_sse", func_result="", exception=e
+                        )
+                        error_payload = (
+                            f"data: {json.dumps({'error': str(e)})}\n\n"
+                        )
+                if error_payload is not None:
+                    # Yield only after the caught exception variable and its
+                    # traceback have left scope in identity mode.
+                    yield error_payload
                 # Returns a streaming response with the proper media type for SSE
 
             return StreamingResponse(
@@ -377,6 +451,18 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         # Attach ASGI middleware for unified telemetry across all routes
         self.app.add_middleware(AgentkitTelemetryHTTPMiddleware)
 
+        if self.runtime_identity is not None:
+            # Added after telemetry so identity is the outermost middleware:
+            # invalid requests fail before Agent/ADK code and the child scope no
+            # longer contains the Authorization header.
+            if identity_middleware_type is None:
+                raise RuntimeError("Agent Identity middleware is not initialized")
+            self.app.add_middleware(
+                identity_middleware_type,
+                identity=self.runtime_identity,
+                public_health_routes=identity_health_routes,
+            )
+
         async def _invoke_compat(request: Request):
             # Use current request span from middleware for telemetry
             span = trace.get_current_span()
@@ -396,7 +482,12 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 text="",
             )
 
-            user_id = headers.get("user_id") or "agentkit_user"
+            identity_context = AgentkitAgentServerApp._request_identity_context(self)
+            user_id = (
+                identity_context.user_sub
+                if identity_context
+                else headers.get("user_id") or "agentkit_user"
+            )
             session_id = headers.get("session_id") or ""
 
             # Determine app_name from loader
@@ -442,6 +533,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 )
 
             async def event_generator():
+                error_payload = None
                 try:
                     runner = await self.server.get_runner_async(app_name)
                     async with Aclosing(
@@ -465,10 +557,22 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                     # finish span on successful end of stream handled by middleware
                     pass
                 except Exception as e:
-                    telemetry.trace_agent_server_finish(
-                        path="/invoke", func_result="", exception=e
-                    )
-                    yield f'data: {{"error": "{str(e)}"}}\n\n'
+                    if getattr(self, "runtime_identity", None) is not None:
+                        safe_error = RuntimeError("agent execution failed")
+                        logger.error("Agent execution failed in identity mode")
+                        telemetry.trace_agent_server_finish(
+                            path="/invoke", func_result="", exception=safe_error
+                        )
+                        error_payload = 'data: {"error":"agent execution failed"}\n\n'
+                    else:
+                        telemetry.trace_agent_server_finish(
+                            path="/invoke", func_result="", exception=e
+                        )
+                        error_payload = f'data: {{"error": "{str(e)}"}}\n\n'
+                if error_payload is not None:
+                    # The identity path never suspends while retaining the
+                    # original exception or its credential-bearing traceback.
+                    yield error_payload
 
             return StreamingResponse(
                 event_generator(),
@@ -483,8 +587,11 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         # Compatibility route for AgentKit CLI invoke
         self.app.add_api_route("/invoke", _invoke_compat, methods=["POST"])
 
-        # Mount A2A server app last to avoid shadowing API routes like `/invoke`.
-        self.app.mount("/", _a2a_server_app)
+        # V1 identity mode does not expose A2A: its payload/session ownership is
+        # not yet bound to the verified OIDC subject. Fail closed instead of
+        # presenting authentication as multi-tenant authorization.
+        if self.runtime_identity is None:
+            self.app.mount("/", _a2a_server_app)
 
     def run(self, host: str, port: int = 8000) -> None:
         """Run the app with Uvicorn server."""
