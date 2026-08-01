@@ -324,6 +324,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
 
             # Convert the events to properly formatted SSE
             async def event_generator():
+                error_payload = None
                 try:
                     stream_mode = (
                         StreamingMode.SSE if req.streaming else StreamingMode.NONE
@@ -369,11 +370,25 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                                 )
                                 yield f"data: {sse_event}\n\n"
                 except Exception as e:
-                    logger.exception("Error in event_generator: %s", e)
-                    telemetry.trace_agent_server_finish(
-                        path="/run_sse", func_result="", exception=e
-                    )
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    if getattr(self, "runtime_identity", None) is not None:
+                        safe_error = RuntimeError("agent execution failed")
+                        logger.error("Agent execution failed in identity mode")
+                        telemetry.trace_agent_server_finish(
+                            path="/run_sse", func_result="", exception=safe_error
+                        )
+                        error_payload = 'data: {"error":"agent execution failed"}\n\n'
+                    else:
+                        logger.exception("Error in event_generator: %s", e)
+                        telemetry.trace_agent_server_finish(
+                            path="/run_sse", func_result="", exception=e
+                        )
+                        error_payload = (
+                            f"data: {json.dumps({'error': str(e)})}\n\n"
+                        )
+                if error_payload is not None:
+                    # Yield only after the caught exception variable and its
+                    # traceback have left scope in identity mode.
+                    yield error_payload
                 # Returns a streaming response with the proper media type for SSE
 
             return StreamingResponse(
@@ -475,6 +490,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 )
 
             async def event_generator():
+                error_payload = None
                 try:
                     runner = await self.server.get_runner_async(app_name)
                     async with Aclosing(
@@ -498,10 +514,22 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                     # finish span on successful end of stream handled by middleware
                     pass
                 except Exception as e:
-                    telemetry.trace_agent_server_finish(
-                        path="/invoke", func_result="", exception=e
-                    )
-                    yield f'data: {{"error": "{str(e)}"}}\n\n'
+                    if getattr(self, "runtime_identity", None) is not None:
+                        safe_error = RuntimeError("agent execution failed")
+                        logger.error("Agent execution failed in identity mode")
+                        telemetry.trace_agent_server_finish(
+                            path="/invoke", func_result="", exception=safe_error
+                        )
+                        error_payload = 'data: {"error":"agent execution failed"}\n\n'
+                    else:
+                        telemetry.trace_agent_server_finish(
+                            path="/invoke", func_result="", exception=e
+                        )
+                        error_payload = f'data: {{"error": "{str(e)}"}}\n\n'
+                if error_payload is not None:
+                    # The identity path never suspends while retaining the
+                    # original exception or its credential-bearing traceback.
+                    yield error_payload
 
             return StreamingResponse(
                 event_generator(),

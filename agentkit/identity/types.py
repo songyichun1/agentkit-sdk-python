@@ -102,9 +102,11 @@ class IdentityRuntimeConfig:
 
     runtime_id: str
     discovery_url: str
+    expected_user_issuer: str
     allowed_clients: tuple[str, ...]
     targets: Mapping[str, ProtectedTarget]
     workload_discovery_url: str | None = None
+    expected_workload_issuer: str | None = None
     workload_pool: str = "default"
     workload_id: str | None = None
     region: str = "cn-beijing"
@@ -114,6 +116,8 @@ class IdentityRuntimeConfig:
     allowed_jwks_origins: tuple[str, ...] = ()
     workload_allowed_jwks_origins: tuple[str, ...] = ()
     clock_skew_seconds: int = 30
+    jwks_cache_seconds: int = 300
+    workload_jwks_cache_seconds: int = 300
     max_cached_tokens: int = 1024
 
     def __post_init__(self) -> None:
@@ -128,6 +132,8 @@ class IdentityRuntimeConfig:
             raise WorkloadBindingError("Agent Identity region is invalid")
         if not self.allowed_clients:
             raise ValueError("at least one allowed OIDC client is required")
+        if not self.expected_user_issuer:
+            raise ValueError("the expected user token issuer is required")
         if not 60 <= self.token_duration_seconds <= 3600:
             raise ValueError("token duration must be between 60 and 3600 seconds")
         if not self.allowed_algorithms:
@@ -146,6 +152,18 @@ class IdentityRuntimeConfig:
             raise WorkloadBindingError(
                 "workload token discovery is required for protected targets"
             )
+        if self.targets and not self.expected_workload_issuer:
+            raise WorkloadBindingError(
+                "the expected workload token issuer is required for protected targets"
+            )
+        if bool(self.workload_discovery_url) != bool(self.expected_workload_issuer):
+            raise WorkloadBindingError(
+                "workload token discovery and expected issuer must be configured together"
+            )
+        if not 1 <= self.jwks_cache_seconds <= 3600:
+            raise ValueError("jwks_cache_seconds must be between 1 and 3600")
+        if not 1 <= self.workload_jwks_cache_seconds <= 3600:
+            raise ValueError("workload_jwks_cache_seconds must be between 1 and 3600")
         if not 1 <= self.max_cached_tokens <= 10_000:
             raise ValueError("max_cached_tokens must be between 1 and 10000")
         normalized: dict[str, ProtectedTarget] = {}

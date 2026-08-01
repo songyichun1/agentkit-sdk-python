@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,10 @@ from agentkit.identity import AuthorizedSession, ProtectedTarget, TargetRequestE
 
 
 class _Identity:
+    def __init__(self):
+        self.lease = _Lease()
+        self.token_calls = 0
+
     def target(self, alias):
         assert alias == "bpm"
         return ProtectedTarget(
@@ -19,7 +25,40 @@ class _Identity:
 
     def _token_for(self, alias):
         assert alias == "bpm"
+        self.token_calls += 1
         return SimpleNamespace(compact="tip.jwt.secret")
+
+    def _request_lease(self):
+        return self.lease
+
+
+class _Lease:
+    def __init__(self):
+        self.active = True
+        self.uses = 0
+        self.condition = threading.Condition()
+
+    @contextmanager
+    def use(self):
+        with self.condition:
+            if not self.active:
+                raise RuntimeError("revoked")
+            self.uses += 1
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.uses -= 1
+                self.condition.notify_all()
+
+    def revoke(self):
+        with self.condition:
+            self.active = False
+
+    def wait_idle(self):
+        with self.condition:
+            while self.uses:
+                self.condition.wait()
 
 
 class _Session:
@@ -27,7 +66,12 @@ class _Session:
         self.kwargs = None
 
     def request(self, method, url, **kwargs):
-        self.kwargs = {"method": method, "url": url, **kwargs}
+        self.kwargs = {
+            "method": method,
+            "url": url,
+            **kwargs,
+            "headers": dict(kwargs["headers"]),
+        }
         response = requests.Response()
         response.status_code = 200
         response.request = requests.Request(
@@ -79,6 +123,13 @@ def test_business_code_cannot_override_authorization_or_target_host(monkeypatch)
         "x-rewrite-url",
         "Cookie",
         "Proxy-Authorization",
+        "Connection",
+        "Content-Length",
+        "Proxy-Connection",
+        "TE",
+        "Trailer",
+        "Transfer-Encoding",
+        "Upgrade",
     ],
 )
 def test_business_code_cannot_override_routing_or_credentials(monkeypatch, header):
@@ -132,6 +183,77 @@ def test_request_exception_is_rebuilt_without_prepared_request(monkeypatch):
         if "/agentkit/" in traceback.tb_frame.f_code.co_filename:
             assert "tip.jwt.secret" not in repr(traceback.tb_frame.f_locals)
         traceback = traceback.tb_next
+
+
+def test_non_requests_exception_is_rebuilt_without_tip_traceback(monkeypatch):
+    class _FailingSession(_Session):
+        def request(self, method, url, **kwargs):
+            raise ValueError(f"unexpected body failure: {kwargs['headers']}")
+
+    monkeypatch.setattr(
+        "agentkit.identity.transport.requests.Session", lambda: _FailingSession()
+    )
+    client = AuthorizedSession(_Identity())
+    with pytest.raises(TargetRequestError) as caught:
+        client.request("POST", "bpm", "/expenses", data=iter([b"body"]))
+    assert "tip.jwt.secret" not in str(caught.value)
+    traceback = caught.value.__traceback__
+    while traceback is not None:
+        if "/agentkit/" in traceback.tb_frame.f_code.co_filename:
+            assert "tip.jwt.secret" not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), True, "30"])
+def test_invalid_timeout_is_rejected_before_tip_acquisition(monkeypatch, timeout):
+    monkeypatch.setattr(
+        "agentkit.identity.transport.requests.Session", lambda: _Session()
+    )
+    identity = _Identity()
+    client = AuthorizedSession(identity)
+    with pytest.raises(ValueError):
+        client.request("GET", "bpm", "/expenses", timeout=timeout)
+    assert identity.token_calls == 0
+
+
+def test_request_lease_covers_token_injection_through_send(monkeypatch):
+    entered_send = threading.Event()
+    release_send = threading.Event()
+
+    class _BlockingSession(_Session):
+        def request(self, method, url, **kwargs):
+            entered_send.set()
+            assert release_send.wait(timeout=2)
+            return super().request(method, url, **kwargs)
+
+    monkeypatch.setattr(
+        "agentkit.identity.transport.requests.Session", lambda: _BlockingSession()
+    )
+    identity = _Identity()
+    client = AuthorizedSession(identity)
+    result = {}
+
+    def invoke():
+        result["response"] = client.request("GET", "bpm", "/expenses")
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    assert entered_send.wait(timeout=2)
+    identity.lease.revoke()
+    drained = threading.Event()
+
+    def wait_idle():
+        identity.lease.wait_idle()
+        drained.set()
+
+    waiter = threading.Thread(target=wait_idle)
+    waiter.start()
+    assert not drained.wait(timeout=0.05)
+    release_send.set()
+    worker.join(timeout=2)
+    waiter.join(timeout=2)
+    assert drained.is_set()
+    assert result["response"].status_code == 200
 
 
 def test_transport_rejects_all_response_cookies():

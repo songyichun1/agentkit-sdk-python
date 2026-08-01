@@ -14,7 +14,7 @@ from hashlib import sha256
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
-from agentkit.identity.context import IdentityContext, _current_binding
+from agentkit.identity.context import IdentityContext, _current_binding, _RequestLease
 from agentkit.identity.errors import (
     IdentityAuthenticationError,
     TargetNotConfiguredError,
@@ -46,6 +46,11 @@ class _IssuedWorkloadToken:
     audiences: tuple[str, ...]
     expires_at: int
     compact: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _TokenFailure:
+    kind: str
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -93,19 +98,23 @@ class RuntimeIdentity:
         self.config = config
         self.verifier = verifier or OidcJwtVerifier(
             discovery_url=config.discovery_url,
+            expected_issuer=config.expected_user_issuer,
             allowed_clients=config.allowed_clients,
             allowed_algorithms=config.allowed_algorithms,
             allowed_jwks_origins=config.allowed_jwks_origins,
             clock_skew_seconds=config.clock_skew_seconds,
+            jwks_cache_seconds=config.jwks_cache_seconds,
         )
         self.exchange = exchange
         self.workload_verifier = workload_verifier
         if self.workload_verifier is None and config.workload_discovery_url:
             self.workload_verifier = WorkloadJwtVerifier(
                 discovery_url=config.workload_discovery_url,
+                expected_issuer=config.expected_workload_issuer,
                 allowed_algorithms=config.workload_allowed_algorithms,
                 allowed_jwks_origins=config.workload_allowed_jwks_origins,
                 clock_skew_seconds=config.clock_skew_seconds,
+                jwks_cache_seconds=config.workload_jwks_cache_seconds,
             )
         self._now = now
         self._cache: dict[tuple[str, ...], _IssuedWorkloadToken] = {}
@@ -148,9 +157,67 @@ class RuntimeIdentity:
             ) from None
 
     def _token_for(self, target_alias: str) -> _IssuedWorkloadToken:
-        """Return a private cached or freshly minted target-bound TIP."""
+        """Return a target-bound TIP without exposing credential-bearing frames."""
+
+        outcome = self._token_for_result(target_alias)
+        if isinstance(outcome, _IssuedWorkloadToken):
+            return outcome
+        if outcome.kind == "target":
+            raise TargetNotConfiguredError(
+                "the requested protected target is not registered"
+            ) from None
+        if outcome.kind == "identity":
+            raise IdentityAuthenticationError(
+                "no active verified identity is bound to this Runtime request"
+            ) from None
+        raise TokenExchangeError(
+            "Agent Identity could not produce a valid workload access token"
+        ) from None
+
+    def _request_lease(self) -> _RequestLease:
+        """Return the active lease without exposing its credential-bearing frame."""
+
+        lease = self._request_lease_result()
+        if lease is None:
+            raise IdentityAuthenticationError(
+                "no active verified identity is bound to this Runtime request"
+            ) from None
+        return lease
+
+    def _request_lease_result(self) -> _RequestLease | None:
+        """Contain bindings that privately retain the inbound ID Token."""
+
+        try:
+            return _current_binding(self).lease
+        except IdentityAuthenticationError:
+            return None
+
+    def _token_for_result(
+        self, target_alias: str
+    ) -> _IssuedWorkloadToken | _TokenFailure:
+        """Convert every secret-bearing failure to a token-free result."""
+
+        try:
+            return self._token_for_secret(target_alias)
+        except TargetNotConfiguredError:
+            return _TokenFailure("target")
+        except IdentityAuthenticationError:
+            return _TokenFailure("identity")
+        except Exception:  # noqa: BLE001 - discard frames that can retain credentials
+            return _TokenFailure("exchange")
+
+    def _token_for_secret(self, target_alias: str) -> _IssuedWorkloadToken:
+        """Perform the exchange inside a frame never exposed on SDK errors."""
 
         binding = _current_binding(self)
+        with binding.lease.use():
+            return self._token_for_active_binding(target_alias, binding)
+
+    def _token_for_active_binding(
+        self, target_alias: str, binding: Any
+    ) -> _IssuedWorkloadToken:
+        """Use a credential only while its request lease cannot be revoked."""
+
         bound = binding.context
         target = self.target(target_alias)
         cache_key = (
@@ -244,6 +311,8 @@ class RuntimeIdentity:
             raise TokenExchangeError("the workload token has an invalid issue time")
         if not isinstance(expires_at, int) or expires_at <= now:
             raise TokenExchangeError("the workload token is expired or undated")
+        if expires_at <= issued_at:
+            raise TokenExchangeError("the workload token lifetime is invalid")
         if expires_at - issued_at > requested_duration + skew:
             raise TokenExchangeError("the workload token lifetime is too broad")
         if expires_at > expected_user_expiry + skew:

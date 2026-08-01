@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from threading import Condition
 from typing import Any
 
 from agentkit.identity.errors import IdentityAuthenticationError
@@ -37,11 +41,63 @@ class IdentityContext:
         )
 
 
+class _RequestLease:
+    """A revocable request lease shared by copied async contexts."""
+
+    def __init__(self) -> None:
+        self._active = True
+        self._uses = 0
+        self._condition = Condition()
+
+    @property
+    def active(self) -> bool:
+        with self._condition:
+            return self._active
+
+    def revoke(self) -> None:
+        """Reject new uses without blocking the ASGI event loop."""
+
+        with self._condition:
+            self._active = False
+
+    def wait_idle(self) -> None:
+        """Wait until every operation admitted before revocation has finished."""
+
+        with self._condition:
+            while self._uses:
+                self._condition.wait()
+
+    @contextmanager
+    def use(self) -> Iterator[None]:
+        """Prevent request revocation while one credential operation is active."""
+
+        with self._condition:
+            if not self._active:
+                raise IdentityAuthenticationError(
+                    "the verified identity request lease has ended"
+                )
+            self._uses += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._uses -= 1
+                if not self._uses:
+                    self._condition.notify_all()
+
+
 @dataclass(frozen=True, repr=False)
 class _IdentityBinding:
     context: IdentityContext
     owner: Any = field(repr=False)
     user_token: str = field(repr=False)
+    lease: _RequestLease = field(repr=False)
+
+
+@dataclass(frozen=True, repr=False)
+class _BindingMarker:
+    token: Token[_IdentityBinding | None] = field(repr=False)
+    lease: _RequestLease = field(repr=False)
 
 
 _CURRENT_BINDING: ContextVar[_IdentityBinding | None] = ContextVar(
@@ -53,11 +109,13 @@ def current_identity(*, required: bool = True) -> IdentityContext | None:
     """Return the current verified identity without exposing its bearer token."""
 
     binding = _CURRENT_BINDING.get()
-    if binding is None and required:
+    if (binding is None or not binding.lease.active) and required:
         raise IdentityAuthenticationError(
             "no verified identity is bound to the current Runtime request"
         )
-    return binding.context if binding is not None else None
+    if binding is None or not binding.lease.active:
+        return None
+    return binding.context
 
 
 def _bind_identity(
@@ -65,18 +123,44 @@ def _bind_identity(
     *,
     owner: Any,
     user_token: str,
-) -> Token[_IdentityBinding | None]:
+) -> _BindingMarker:
     """Bind safe metadata and its private credential for one SDK Runtime."""
 
-    return _CURRENT_BINDING.set(
-        _IdentityBinding(context=identity, owner=owner, user_token=user_token)
+    lease = _RequestLease()
+    token = _CURRENT_BINDING.set(
+        _IdentityBinding(
+            context=identity,
+            owner=owner,
+            user_token=user_token,
+            lease=lease,
+        )
     )
+    return _BindingMarker(token=token, lease=lease)
 
 
-def _reset_identity(marker: Token[_IdentityBinding | None]) -> None:
+def _reset_identity(marker: _BindingMarker) -> None:
     """Restore the previous context after a request, exception, or cancellation."""
 
-    _CURRENT_BINDING.reset(marker)
+    # A child task created during the request receives a copied ContextVar value,
+    # but it still shares this mutable lease. Revocation therefore invalidates
+    # identity use in detached work before the parent context is restored.
+    marker.lease.revoke()
+    _CURRENT_BINDING.reset(marker.token)
+
+
+async def _drain_identity(marker: _BindingMarker) -> None:
+    """Drain admitted operations even while the parent request is cancelled."""
+
+    drain = asyncio.create_task(asyncio.to_thread(marker.lease.wait_idle))
+    cancelled = False
+    while not drain.done():
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            cancelled = True
+    drain.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _current_binding(owner: Any) -> _IdentityBinding:
@@ -84,6 +168,10 @@ def _current_binding(owner: Any) -> _IdentityBinding:
     if binding is None:
         raise IdentityAuthenticationError(
             "no verified identity is bound to the current Runtime request"
+        )
+    if not binding.lease.active:
+        raise IdentityAuthenticationError(
+            "the verified identity request lease has ended"
         )
     if binding.owner is not owner:
         raise IdentityAuthenticationError(

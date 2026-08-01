@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from agentkit.identity import (
     IdentityRuntimeConfig,
@@ -16,6 +17,8 @@ from agentkit.identity import (
     WorkloadJwtVerifier,
 )
 from agentkit.identity.context import _bind_identity, _reset_identity
+
+TIP_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
 class _Verifier:
@@ -49,8 +52,8 @@ class _Exchange:
                 "iat": now,
                 "exp": now + 300,
             },
-            "tip-signing-secret-0123456789abcdef",
-            algorithm="HS256",
+            TIP_PRIVATE_KEY,
+            algorithm="RS256",
         )
         return compact, now + 300
 
@@ -59,8 +62,10 @@ def _config():
     return IdentityRuntimeConfig(
         runtime_id="r-1",
         discovery_url="https://issuer.example.com",
+        expected_user_issuer="https://issuer.example.com",
         allowed_clients=("client",),
         workload_discovery_url="https://workload.example.com/pool-1",
+        expected_workload_issuer="https://workload.example.com/pool-1",
         targets={
             "bpm": ProtectedTarget(
                 alias="bpm",
@@ -74,12 +79,12 @@ def _config():
 def _workload_verifier():
     return WorkloadJwtVerifier(
         discovery_url="https://workload.example.com/pool-1",
-        allowed_algorithms=("HS256",),
+        expected_issuer="https://workload.example.com/pool-1",
         discovery_document={
             "issuer": "https://workload.example.com/pool-1",
             "jwks_uri": "https://workload.example.com/pool-1/.well-known/jwks",
         },
-        signing_key_resolver=lambda _: "tip-signing-secret-0123456789abcdef",
+        signing_key_resolver=lambda _: TIP_PRIVATE_KEY.public_key(),
     )
 
 
@@ -91,6 +96,7 @@ def test_runtime_id_is_the_fixed_workload_id():
             runtime_id="r-1",
             workload_id="other",
             discovery_url="https://issuer.example.com",
+            expected_user_issuer="https://issuer.example.com",
             allowed_clients=("client",),
             targets=config.targets,
         )
@@ -202,3 +208,37 @@ def test_cache_is_bound_to_subject_token_and_capacity_is_bounded():
 
     assert len(exchange.calls) == 2
     assert len(runtime._cache) == 1
+
+
+def test_exchange_failure_traceback_does_not_retain_the_user_token():
+    secret = "user.jwt.secret-value"
+
+    class _FailingExchange:
+        def exchange_for_jwt(self, **kwargs):
+            raise RuntimeError(f"backend retained {kwargs['subject_token']}")
+
+    runtime = RuntimeIdentity(
+        _config(),
+        verifier=_Verifier(),
+        workload_verifier=_workload_verifier(),
+        exchange=_FailingExchange(),
+    )
+    authenticated = runtime._authenticate(f"Bearer {secret}")
+    marker = _bind_identity(
+        authenticated.context,
+        owner=runtime,
+        user_token=authenticated.user_token,
+    )
+    try:
+        with pytest.raises(TokenExchangeError) as caught:
+            runtime._token_for("bpm")
+    finally:
+        _reset_identity(marker)
+
+    assert secret not in str(caught.value)
+    assert caught.value.__cause__ is None
+    traceback = caught.value.__traceback__
+    while traceback is not None:
+        if "/agentkit/" in traceback.tb_frame.f_code.co_filename:
+            assert secret not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next

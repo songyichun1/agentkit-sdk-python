@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
+import pytest
+
 from agentkit.identity import AgentIdentityMiddleware
-from agentkit.identity.context import IdentityContext, current_identity
+from agentkit.identity.context import (
+    IdentityContext,
+    _current_binding,
+    current_identity,
+)
 from agentkit.identity.errors import IdentityAuthenticationError
 
 
@@ -25,6 +32,9 @@ class _Runtime:
         if authorization != "Bearer secret.jwt.value":
             raise IdentityAuthenticationError("invalid")
         return SimpleNamespace(context=_context(), user_token="secret.jwt.value")
+
+    def private_user_token(self):
+        return _current_binding(self).user_token
 
 
 async def _receive():
@@ -56,6 +66,7 @@ async def _exercise_middleware_scrubs_authorization_and_resets_context():
     await middleware(
         {
             "type": "http",
+            "method": "POST",
             "path": "/invoke",
             "headers": [(b"authorization", b"Bearer secret.jwt.value")],
         },
@@ -66,6 +77,185 @@ async def _exercise_middleware_scrubs_authorization_and_resets_context():
     assert not any(key == b"authorization" for key, _ in seen["headers"])
     assert current_identity(required=False) is None
     assert messages[0]["status"] == 200
+
+
+def test_detached_task_loses_identity_and_private_token_after_request():
+    asyncio.run(_exercise_detached_task_loses_identity())
+
+
+async def _exercise_detached_task_loses_identity():
+    release = asyncio.Event()
+    runtime = _Runtime()
+    results = {}
+    task = None
+
+    async def detached():
+        await release.wait()
+        for name, operation in (
+            ("public", current_identity),
+            ("private", runtime.private_user_token),
+        ):
+            try:
+                operation()
+            except IdentityAuthenticationError:
+                results[name] = "revoked"
+
+    async def app(scope, receive, send):
+        nonlocal task
+        task = asyncio.create_task(detached())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    middleware = AgentIdentityMiddleware(app, identity=runtime)
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/invoke",
+            "headers": [(b"authorization", b"Bearer secret.jwt.value")],
+        },
+        _receive,
+        send,
+    )
+    release.set()
+    assert task is not None
+    await task
+    assert results == {"public": "revoked", "private": "revoked"}
+
+
+def test_request_waits_for_an_operation_admitted_before_revocation():
+    asyncio.run(_exercise_request_waits_for_admitted_operation())
+
+
+async def _exercise_request_waits_for_admitted_operation():
+    started = threading.Event()
+    release = threading.Event()
+    runtime = _Runtime()
+    worker = None
+
+    def protected_operation():
+        binding = _current_binding(runtime)
+        with binding.lease.use():
+            started.set()
+            assert release.wait(timeout=2)
+
+    async def app(scope, receive, send):
+        nonlocal worker
+        worker = asyncio.create_task(asyncio.to_thread(protected_operation))
+        assert await asyncio.to_thread(started.wait, 2)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    middleware = AgentIdentityMiddleware(app, identity=runtime)
+    request = asyncio.create_task(
+        middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/invoke",
+                "headers": [(b"authorization", b"Bearer secret.jwt.value")],
+            },
+            _receive,
+            send,
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert not request.done()
+    assert current_identity(required=False) is None
+    release.set()
+    await request
+    assert worker is not None
+    await worker
+
+
+def test_request_cancellation_still_drains_an_admitted_operation():
+    asyncio.run(_exercise_cancellation_drains_admitted_operation())
+
+
+async def _exercise_cancellation_drains_admitted_operation():
+    started = threading.Event()
+    release = threading.Event()
+    runtime = _Runtime()
+    worker = None
+
+    def protected_operation():
+        binding = _current_binding(runtime)
+        with binding.lease.use():
+            started.set()
+            assert release.wait(timeout=2)
+
+    async def app(scope, receive, send):
+        nonlocal worker
+        worker = asyncio.create_task(asyncio.to_thread(protected_operation))
+        assert await asyncio.to_thread(started.wait, 2)
+        await asyncio.Event().wait()
+
+    async def send(message):
+        pass
+
+    middleware = AgentIdentityMiddleware(app, identity=runtime)
+    request = asyncio.create_task(
+        middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/invoke",
+                "headers": [(b"authorization", b"Bearer secret.jwt.value")],
+            },
+            _receive,
+            send,
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 2)
+    request.cancel()
+    await asyncio.sleep(0.05)
+    assert not request.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert worker is not None
+    await worker
+
+
+def test_inner_app_exception_traceback_does_not_retain_id_token():
+    asyncio.run(_exercise_inner_app_exception_traceback_is_token_free())
+
+
+async def _exercise_inner_app_exception_traceback_is_token_free():
+    async def app(scope, receive, send):
+        raise ValueError("inner application failed")
+
+    async def send(message):
+        pass
+
+    middleware = AgentIdentityMiddleware(app, identity=_Runtime())
+    try:
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/invoke",
+                "headers": [(b"authorization", b"Bearer secret.jwt.value")],
+            },
+            _receive,
+            send,
+        )
+    except ValueError as error:
+        traceback = error.__traceback__
+        while traceback is not None:
+            if "/agentkit/" in traceback.tb_frame.f_code.co_filename:
+                locals_repr = repr(traceback.tb_frame.f_locals)
+                assert "secret.jwt.value" not in locals_repr
+                assert "Bearer secret.jwt.value" not in locals_repr
+            traceback = traceback.tb_next
+    else:
+        raise AssertionError("inner application failure did not propagate")
 
 
 def test_middleware_rejects_missing_token_before_app():

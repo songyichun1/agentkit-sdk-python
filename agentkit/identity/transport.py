@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import http.cookiejar
+import math
 from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -29,10 +30,17 @@ class _RejectAllCookies(http.cookiejar.DefaultCookiePolicy):
 
 _FORBIDDEN_HEADERS = {
     "authorization",
+    "connection",
+    "content-length",
     "cookie",
     "forwarded",
     "host",
     "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
     "x-original-url",
     "x-rewrite-url",
 }
@@ -73,11 +81,15 @@ class AuthorizedSession:
         if parsed_path.scheme or parsed_path.netloc:
             raise ValueError("authorized request path must be relative")
         decoded_path = parsed_path.path
-        for _ in range(3):
+        for _ in range(10):
             next_value = unquote(decoded_path)
             if next_value == decoded_path:
                 break
             decoded_path = next_value
+        else:
+            raise ValueError("authorized request path has excessive encoding")
+        if unquote(decoded_path) != decoded_path:
+            raise ValueError("authorized request path has unstable encoding")
         if "\\" in decoded_path or any(
             segment in {".", ".."} for segment in decoded_path.split("/")
         ):
@@ -106,27 +118,77 @@ class AuthorizedSession:
             raise ValueError(
                 "security-sensitive request options are managed by AgentKit Identity"
             )
-        workload_token = self._identity._token_for(target_alias)
-        request_headers["Authorization"] = f"Bearer {workload_token.compact}"
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError(
+                "protected target timeout must be a positive finite number"
+            )
         base_url = target.base_url.rstrip("/") + "/"
         url = urljoin(base_url, path.lstrip("/"))
-        if not url.startswith(base_url):
-            raise ValueError("authorized request path escaped its registered target")
-        response = self._send(
-            normalized_method,
-            url,
-            headers=request_headers,
-            timeout=timeout,
-            kwargs=kwargs,
+        parsed_base = urlsplit(base_url)
+        parsed_url = urlsplit(url)
+        base_origin = (
+            parsed_base.scheme,
+            parsed_base.hostname,
+            parsed_base.port or 443,
         )
+        request_origin = (
+            parsed_url.scheme,
+            parsed_url.hostname,
+            parsed_url.port or 443,
+        )
+        base_path = parsed_base.path.rstrip("/")
+        request_path = parsed_url.path
+        if request_origin != base_origin or not (
+            request_path == base_path or request_path.startswith(base_path + "/")
+        ):
+            raise ValueError("authorized request path escaped its registered target")
+        lease = self._identity._request_lease()
+        with lease.use():
+            response = self._request_with_credential(
+                normalized_method,
+                target_alias,
+                url,
+                headers=request_headers,
+                timeout=float(timeout),
+                kwargs=kwargs,
+            )
         if response is None:
-            # Remove bearer-bearing locals before creating a traceback visible
-            # to Agent or Tool code. _send converts requests failures to a
-            # sentinel, so its private frame is not part of this traceback.
-            request_headers.pop("Authorization", None)
-            workload_token = None
             raise TargetRequestError("protected target request failed") from None
         return response
+
+    def _request_with_credential(
+        self,
+        method: str,
+        target_alias: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        timeout: float,
+        kwargs: dict[str, Any],
+    ) -> requests.Response | None:
+        """Contain every frame that can retain an injected workload TIP."""
+
+        workload_token = None
+        try:
+            workload_token = self._identity._token_for(target_alias)
+            headers["Authorization"] = f"Bearer {workload_token.compact}"
+            return self._send(
+                method,
+                url,
+                headers=headers,
+                timeout=timeout,
+                kwargs=kwargs,
+            )
+        except Exception:  # noqa: BLE001 - collapse secret-bearing failures
+            return None
+        finally:
+            headers.pop("Authorization", None)
+            workload_token = None
 
     def _send(
         self,
@@ -148,11 +210,11 @@ class AuthorizedSession:
                 allow_redirects=False,
                 **kwargs,
             )
-        except requests.RequestException:
+            if not isinstance(response, requests.Response):
+                return None
+            # requests.Response otherwise exposes the PreparedRequest (and TIP) as
+            # response.request. It is not needed for status/body/streaming APIs.
+            response.request = None
+            return response
+        except Exception:  # noqa: BLE001 - discard all bearer-bearing frames
             return None
-        if not isinstance(response, requests.Response):
-            return None
-        # requests.Response otherwise exposes the PreparedRequest (and TIP) as
-        # response.request. It is not needed for status/body/streaming APIs.
-        response.request = None
-        return response

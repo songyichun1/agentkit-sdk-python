@@ -25,6 +25,20 @@ from agentkit.identity.types import VerifiedUserIdentity
 
 _MAX_DISCOVERY_BYTES = 1024 * 1024
 _MAX_JWKS_BYTES = 4 * 1024 * 1024
+_ASYMMETRIC_JWT_ALGORITHMS = frozenset(
+    {
+        "EdDSA",
+        "ES256",
+        "ES384",
+        "ES512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "RS256",
+        "RS384",
+        "RS512",
+    }
+)
 
 
 def _is_loopback(hostname: str | None) -> bool:
@@ -183,12 +197,14 @@ class OidcJwtVerifier:
         self,
         *,
         discovery_url: str,
+        expected_issuer: str,
         allowed_clients: tuple[str, ...],
         allowed_algorithms: tuple[str, ...] = ("RS256",),
         clock_skew_seconds: int = 30,
         timeout_seconds: float = 5.0,
         allowed_jwks_origins: tuple[str, ...] = (),
         allow_insecure_loopback: bool = False,
+        jwks_cache_seconds: int = 300,
         discovery_document: Mapping[str, Any] | None = None,
         signing_key_resolver: Callable[[str], Any] | None = None,
     ) -> None:
@@ -196,6 +212,10 @@ class OidcJwtVerifier:
             raise ValueError("at least one allowed OIDC client is required")
         if not allowed_algorithms:
             raise ValueError("at least one allowed JWT algorithm is required")
+        if not set(allowed_algorithms).issubset(_ASYMMETRIC_JWT_ALGORITHMS):
+            raise ValueError("ID Tokens must use approved asymmetric algorithms")
+        if not 1 <= jwks_cache_seconds <= 3600:
+            raise ValueError("jwks_cache_seconds must be between 1 and 3600")
         self._allow_insecure_loopback = allow_insecure_loopback
         self.discovery_url = _as_discovery_url(
             discovery_url,
@@ -203,8 +223,14 @@ class OidcJwtVerifier:
         )
         self.allowed_clients = tuple(allowed_clients)
         self.allowed_algorithms = tuple(allowed_algorithms)
+        self.expected_issuer = _validate_remote_url(
+            expected_issuer,
+            label="expected OIDC issuer",
+            allow_insecure_loopback=allow_insecure_loopback,
+        )
         self.clock_skew_seconds = clock_skew_seconds
         self.timeout_seconds = timeout_seconds
+        self.jwks_cache_seconds = jwks_cache_seconds
         self._allowed_jwks_origins = frozenset(
             _origin(
                 _validate_remote_url(
@@ -251,14 +277,15 @@ class OidcJwtVerifier:
             raise IdentityUnavailableError(
                 "OIDC discovery is missing trusted issuer metadata"
             ) from exc
-        # OIDC permits jwks_uri on a different origin. An HTTPS discovery
-        # document fetched from deployment-pinned configuration is authoritative
-        # for that URL. Deployments that need a narrower egress boundary can set
-        # allowed_jwks_origins; when present it is an explicit strict allowlist.
-        if (
-            self._allowed_jwks_origins
-            and _origin(jwks_uri) not in self._allowed_jwks_origins
-        ):
+        if issuer != self.expected_issuer:
+            raise IdentityUnavailableError(
+                "OIDC discovery issuer does not match the configured trust anchor"
+            )
+        allowed_origins = {
+            _origin(self.discovery_url),
+            *self._allowed_jwks_origins,
+        }
+        if _origin(jwks_uri) not in allowed_origins:
             raise IdentityUnavailableError("OIDC JWKS URL is not on a trusted origin")
         # OIDC issuer comparison is exact; a trailing slash is significant and
         # must not be normalized away after discovery.
@@ -270,7 +297,8 @@ class OidcJwtVerifier:
         if self._jwk_client is None:
             self._jwk_client = _PinnedPyJWKClient(
                 jwks_uri,
-                cache_keys=True,
+                cache_keys=False,
+                lifespan=self.jwks_cache_seconds,
                 timeout=self.timeout_seconds,
                 allow_insecure_loopback=self._allow_insecure_loopback,
             )
@@ -332,6 +360,10 @@ class OidcJwtVerifier:
             raise IdentityAuthenticationError(
                 "the inbound ID Token has invalid time claims"
             )
+        if expires_at <= issued_at:
+            raise IdentityAuthenticationError(
+                "the inbound ID Token has an invalid lifetime"
+            )
         if expected_subject is not None and subject != expected_subject:
             raise IdentityAuthenticationError(
                 "the refreshed ID Token changed the authenticated subject"
@@ -353,6 +385,10 @@ class OidcJwtVerifier:
         if len(audiences) > 1 and not isinstance(authorized_party, str):
             raise IdentityAuthenticationError(
                 "a multi-audience ID Token must identify its authorized party"
+            )
+        if isinstance(authorized_party, str) and authorized_party not in audiences:
+            raise IdentityAuthenticationError(
+                "the inbound ID Token authorized party is not an audience"
             )
         client_id = (
             authorized_party
@@ -392,24 +428,36 @@ class WorkloadJwtVerifier:
         self,
         *,
         discovery_url: str,
+        expected_issuer: str,
         allowed_algorithms: tuple[str, ...] = ("RS256",),
         clock_skew_seconds: int = 30,
         timeout_seconds: float = 5.0,
         allowed_jwks_origins: tuple[str, ...] = (),
         allow_insecure_loopback: bool = False,
+        jwks_cache_seconds: int = 300,
         discovery_document: Mapping[str, Any] | None = None,
         signing_key_resolver: Callable[[str], Any] | None = None,
     ) -> None:
         if not allowed_algorithms:
             raise ValueError("at least one JWT algorithm is required")
+        if not set(allowed_algorithms).issubset(_ASYMMETRIC_JWT_ALGORITHMS):
+            raise ValueError("workload tokens must use approved asymmetric algorithms")
+        if not 1 <= jwks_cache_seconds <= 3600:
+            raise ValueError("jwks_cache_seconds must be between 1 and 3600")
         self._allow_insecure_loopback = allow_insecure_loopback
         self.discovery_url = _as_discovery_url(
             discovery_url,
             allow_insecure_loopback=allow_insecure_loopback,
         )
         self.allowed_algorithms = tuple(allowed_algorithms)
+        self.expected_issuer = _validate_remote_url(
+            expected_issuer,
+            label="expected workload token issuer",
+            allow_insecure_loopback=allow_insecure_loopback,
+        )
         self.clock_skew_seconds = clock_skew_seconds
         self.timeout_seconds = timeout_seconds
+        self.jwks_cache_seconds = jwks_cache_seconds
         self._allowed_jwks_origins = frozenset(
             _origin(
                 _validate_remote_url(
@@ -452,11 +500,11 @@ class WorkloadJwtVerifier:
             raise IdentityUnavailableError(
                 "workload OIDC discovery is missing trusted issuer metadata"
             ) from exc
-        allowed_origins = {
-            _origin(self.discovery_url),
-            _origin(issuer),
-            *self._allowed_jwks_origins,
-        }
+        if issuer != self.expected_issuer:
+            raise IdentityUnavailableError(
+                "workload discovery issuer does not match the configured trust anchor"
+            )
+        allowed_origins = {_origin(self.discovery_url), *self._allowed_jwks_origins}
         if _origin(jwks_uri) not in allowed_origins:
             raise IdentityUnavailableError(
                 "workload token JWKS URL is not on a trusted origin"
@@ -469,7 +517,8 @@ class WorkloadJwtVerifier:
         if self._jwk_client is None:
             self._jwk_client = _PinnedPyJWKClient(
                 jwks_uri,
-                cache_keys=True,
+                cache_keys=False,
+                lifespan=self.jwks_cache_seconds,
                 timeout=self.timeout_seconds,
                 allow_insecure_loopback=self._allow_insecure_loopback,
             )
@@ -502,7 +551,7 @@ class WorkloadJwtVerifier:
         issuer, jwks_uri = self._metadata()
         signing_key = self._resolve_signing_key(compact, jwks_uri)
         try:
-            return jwt.decode(
+            claims = jwt.decode(
                 compact,
                 signing_key,
                 algorithms=list(self.allowed_algorithms),
@@ -515,3 +564,14 @@ class WorkloadJwtVerifier:
             raise IdentityAuthenticationError(
                 "the workload token failed verification"
             ) from exc
+        issued_at = claims.get("iat")
+        expires_at = claims.get("exp")
+        if (
+            not isinstance(issued_at, int)
+            or not isinstance(expires_at, int)
+            or expires_at <= issued_at
+        ):
+            raise IdentityAuthenticationError(
+                "the workload token has an invalid lifetime"
+            )
+        return claims

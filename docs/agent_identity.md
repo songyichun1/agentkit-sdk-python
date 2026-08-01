@@ -4,6 +4,13 @@ AgentKit Runtime can authenticate a signed-in user, bind the request to the
 Runtime's own Workload Identity, and obtain a short-lived, target-bound workload
 access token (TIP) before calling a protected downstream service.
 
+This API is experimental in the 0.8.x line. Install the Agent Server integration
+explicitly:
+
+```shell
+pip install "agentkit-sdk-python[identity-runtime]"
+```
+
 This is a data-plane SDK. It is deliberately separate from
 `agentkit.sdk.identity`, which configures Runtime inbound authorizers through the
 management plane.
@@ -14,7 +21,8 @@ The deployment, not an inbound request, provides an immutable
 `IdentityRuntimeConfig`:
 
 - `runtime_id` is also the Workload Identity name in this version;
-- the OIDC issuer and allowed client IDs define which user ID Tokens are trusted;
+- the expected OIDC issuer, discovery URL, explicit JWKS origins, and allowed
+  client IDs define which user ID Tokens are trusted;
 - the Workload Pool discovery URL pins the issuer/JWKS used to verify returned
   TIPs;
 - every downstream alias maps to exactly one audience and, for HTTP, one HTTPS
@@ -49,10 +57,17 @@ identity = RuntimeIdentity(
             "https://userpool-example.userpool.auth.id.cn-beijing."
             "volces.com"
         ),
+        expected_user_issuer=(
+            "https://userpool-example.userpool.auth.id.cn-beijing."
+            "volces.com"
+        ),
         allowed_clients=("agentkit-public-client",),
         workload_discovery_url=(
             "https://auth.id.cn-beijing.volces.com/workloadpool/<pool-id>/"
             ".well-known/openid-configuration"
+        ),
+        expected_workload_issuer=(
+            "https://auth.id.cn-beijing.volces.com/workloadpool/<pool-id>"
         ),
         targets={
             "expense": ProtectedTarget(
@@ -86,6 +101,12 @@ router. Before any authenticated Agent or Tool route runs, it:
 4. binds an immutable `IdentityContext` for the whole streaming request;
 5. uses the verified `sub`, not caller-provided `user_id`, on AgentKit's
    `/invoke` and `/run_sse` paths.
+
+The binding includes a revocable request lease. A detached `asyncio` task may
+inherit the Python context, but it cannot start a new protected operation after
+revocation. An operation admitted before revocation holds the lease from TIP
+acquisition through downstream request completion; normal return and request
+cancellation both drain those operations before the ASGI request completes.
 
 ADK session paths under `/apps/{app}/users/{user}/...` are rejected unless the
 path user equals the verified subject. The unbound ADK `/run` route and A2A mount
@@ -134,6 +155,10 @@ caller cookies, `TRACE`/`CONNECT`, response cookies, and security-sensitive
 `requests` options. The returned response and any raised SDK error do not retain
 the prepared request that carried the TIP.
 
+JWKS document caching has an explicit bounded TTL (300 seconds by default), and
+resolved signing keys are not cached indefinitely by `kid`. Same-`kid` key
+replacement therefore takes effect no later than the configured JWKS TTL.
+
 The downstream service or APIG independently verifies the TIP and audience
 and enforces policy over the user (`sub`), Agent/Workload (`act.sub`), action, and
 resource.
@@ -175,9 +200,14 @@ Runner converts a request into A2A business metadata.
   but the host/service/version/action still require a live compatibility check.
   Do not use it where the Identity service has not yet enforced Runtime IAM to
   Workload ownership; inject an APIG-bound exchange instead.
+- `IdentityClient` is currently Volcengine-only and pins the Volcengine Agent
+  Identity endpoint even if the process-wide AgentKit provider is BytePlus.
 - Token redaction and private Python attributes reduce accidental exposure; they
   do not isolate secrets from malicious code in the same process. A gateway,
   sidecar, or separate broker is required for that stronger threat model.
+- A TIP is still a short-lived bearer token. V1 validates its subject, direct
+  actor, singleton audience, issuer, and lifetime, but does not provide DPoP,
+  sender-constrained proof, or a consumed-`jti` replay ledger.
 - Except for credential-free CORS preflight, the SDK authenticates every HTTP
   route when identity mode is enabled. V1 rejects mismatched ADK session paths
   and disables the unbound `/run` and A2A paths.
@@ -187,10 +217,16 @@ Runner converts a request into A2A business metadata.
 - Saved sessions created before verified `user_sub` binding continue using a
   still-valid cached ID Token, but require one new browser login when refresh is
   next needed. This is a deliberate fail-closed upgrade behavior.
-- Standard OIDC deployments may advertise HTTPS authorization, token, and JWKS
-  endpoints on origins different from the issuer. AgentKit trusts the exact URLs
-  in the issuer-matched discovery document, blocks cross-origin redirects for
-  each request, and supports an explicit strict JWKS-origin allowlist.
+- Standard OIDC deployments may advertise a JWKS endpoint on an origin different
+  from discovery. AgentKit requires an exact deployment-configured issuer match;
+  a cross-origin JWKS endpoint must also be listed explicitly in the trusted
+  JWKS-origin allowlist. Each individual request still blocks cross-origin
+  redirects.
+- The configured JWKS cache TTL is also the maximum normal signing-key
+  revocation delay; V1 has no emergency process-wide cache purge API.
+- The SDK validates HTTPS origins and redirects but does not itself reject every
+  private, link-local, metadata, or DNS-rebinding destination. Production
+  deployments must pin expected endpoints and enforce an egress allowlist.
 - The Identity OpenAPI action, signing service, endpoint, and version in this
   implementation follow the repository's fixed API baseline. They require a
   live compatibility check before a production release.

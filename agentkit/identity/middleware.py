@@ -9,17 +9,69 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
-from agentkit.identity.context import _bind_identity, _reset_identity
+from agentkit.identity.context import _bind_identity, _drain_identity, _reset_identity
 from agentkit.identity.errors import (
     IdentityAuthenticationError,
     IdentityUnavailableError,
 )
 from agentkit.identity.runtime import RuntimeIdentity
 
-_ADK_USER_PATH = re.compile(r"^/apps/[^/]+/users/([^/]+)(?:/|$)")
-_IDENTITY_BOUND_ROUTES = frozenset({"/invoke", "/run_sse"})
+_IDENTITY_BOUND_ROUTES = {
+    "/invoke": frozenset({"POST"}),
+    "/run_sse": frozenset({"POST"}),
+}
+_ADK_USER_ROUTE_RULES = (
+    (re.compile(r"^/apps/[^/]+/users/([^/]+)/sessions$"), {"GET", "POST"}),
+    (
+        re.compile(r"^/apps/[^/]+/users/([^/]+)/sessions/[^/]+$"),
+        {"GET", "POST", "DELETE", "PATCH"},
+    ),
+    (
+        re.compile(r"^/apps/[^/]+/users/([^/]+)/sessions/[^/]+/artifacts$"),
+        {"GET", "POST"},
+    ),
+    (
+        re.compile(r"^/apps/[^/]+/users/([^/]+)/sessions/[^/]+/artifacts/[^/]+$"),
+        {"GET", "DELETE"},
+    ),
+    (
+        re.compile(
+            r"^/apps/[^/]+/users/([^/]+)/sessions/[^/]+/artifacts/[^/]+/versions$"
+        ),
+        {"GET"},
+    ),
+    (
+        re.compile(
+            r"^/apps/[^/]+/users/([^/]+)/sessions/[^/]+/artifacts/[^/]+/"
+            r"versions/metadata$"
+        ),
+        {"GET"},
+    ),
+    (
+        re.compile(
+            r"^/apps/[^/]+/users/([^/]+)/sessions/[^/]+/artifacts/[^/]+/"
+            r"versions/[^/]+$"
+        ),
+        {"GET"},
+    ),
+    (
+        re.compile(
+            r"^/apps/[^/]+/users/([^/]+)/sessions/[^/]+/artifacts/[^/]+/"
+            r"versions/[^/]+/metadata$"
+        ),
+        {"GET"},
+    ),
+    (re.compile(r"^/apps/[^/]+/users/([^/]+)/memory$"), {"PATCH"}),
+)
+
+
+@dataclass(frozen=True)
+class _AuthenticationFailure:
+    status: int
+    code: str
 
 
 class AgentIdentityMiddleware:
@@ -77,31 +129,78 @@ class AgentIdentityMiddleware:
             and str(scope.get("path") or "") in self.public_health_routes
         )
 
-    async def _call_without_credential(
-        self, scope: dict[str, Any], receive: Any, send: Any
-    ) -> None:
+    @staticmethod
+    def _scope_without_credential(scope: dict[str, Any]) -> dict[str, Any]:
         child_scope = dict(scope)
         child_scope["headers"] = [
             (key, value)
             for key, value in scope.get("headers", [])
             if key.lower() != b"authorization"
         ]
-        await self.app(child_scope, receive, send)
+        return child_scope
+
+    def _authenticate_result(self, scope: dict[str, Any]) -> Any:
+        """Contain raw scope/token frames and return only a safe outcome."""
+
+        try:
+            return self.identity._authenticate(self._authorization(scope))
+        except IdentityAuthenticationError:
+            return _AuthenticationFailure(401, "AUTH_REQUIRED")
+        except IdentityUnavailableError:
+            return _AuthenticationFailure(503, "IDENTITY_UNAVAILABLE")
+        except Exception:  # noqa: BLE001 - discard frames that can retain credentials
+            return _AuthenticationFailure(503, "IDENTITY_UNAVAILABLE")
+
+    def _bind_authenticated(self, authenticated: Any) -> Any | None:
+        """Move the private token into ContextVar storage without leaking frames."""
+
+        try:
+            return _bind_identity(
+                authenticated.context,
+                owner=self.identity,
+                user_token=authenticated.user_token,
+            )
+        except Exception:  # noqa: BLE001 - discard secret-bearing binding frames
+            return None
 
     @staticmethod
-    def _route_is_bound(scope: dict[str, Any], subject: str) -> bool:
+    def _requested_preflight_method(scope: dict[str, Any]) -> str | None:
+        values = [
+            value.decode("latin-1").strip().upper()
+            for key, value in scope.get("headers", [])
+            if key.lower() == b"access-control-request-method"
+        ]
+        return values[0] if len(values) == 1 and values[0] else None
+
+    @staticmethod
+    def _matched_route_subject(path: str, method: str) -> str | None:
+        for pattern, methods in _ADK_USER_ROUTE_RULES:
+            match = pattern.fullmatch(path)
+            if match is not None and method in methods:
+                return match.group(1)
+        return None
+
+    @classmethod
+    def _route_is_bound(cls, scope: dict[str, Any], subject: str) -> bool:
         """Allow only routes whose user ownership is explicit in V1."""
 
         path = str(scope.get("path") or "")
-        if path in _IDENTITY_BOUND_ROUTES:
+        method = str(scope.get("method") or "").upper()
+        if method == "OPTIONS":
+            method = cls._requested_preflight_method(scope) or ""
+        if method in _IDENTITY_BOUND_ROUTES.get(path, ()):
             return True
-        match = _ADK_USER_PATH.match(path)
-        return match is not None and match.group(1) == subject
+        return cls._matched_route_subject(path, method) == subject
 
-    @staticmethod
-    def _preflight_route_is_bound(scope: dict[str, Any]) -> bool:
+    @classmethod
+    def _preflight_route_is_bound(cls, scope: dict[str, Any]) -> bool:
         path = str(scope.get("path") or "")
-        return path in _IDENTITY_BOUND_ROUTES or _ADK_USER_PATH.match(path) is not None
+        method = cls._requested_preflight_method(scope)
+        if method is None:
+            return False
+        return method in _IDENTITY_BOUND_ROUTES.get(path, ()) or (
+            cls._matched_route_subject(path, method) is not None
+        )
 
     @staticmethod
     async def _error(send: Any, status: int, code: str) -> None:
@@ -122,9 +221,11 @@ class AgentIdentityMiddleware:
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         scope_type = scope.get("type")
         if scope_type == "lifespan":
+            scope = self._scope_without_credential(scope)
             await self.app(scope, receive, send)
             return
         if scope_type == "websocket":
+            scope = self._scope_without_credential(scope)
             await send(
                 {
                     "type": "websocket.close",
@@ -138,7 +239,8 @@ class AgentIdentityMiddleware:
         if self._is_public_health_route(scope):
             # Fixed, deployment-selected liveness/readiness routes perform no
             # business action. Never expose a caller credential to them.
-            await self._call_without_credential(scope, receive, send)
+            scope = self._scope_without_credential(scope)
+            await self.app(scope, receive, send)
             return
         if self._is_cors_preflight(scope) and self._authorization(scope) is None:
             # Browser preflight carries no user credential and performs no
@@ -149,42 +251,41 @@ class AgentIdentityMiddleware:
             else:
                 await self._error(send, 403, "ROUTE_NOT_IDENTITY_BOUND")
             return
-        try:
-            authenticated = self.identity._authenticate(self._authorization(scope))
-        except IdentityAuthenticationError:
-            await self._error(send, 401, "AUTH_REQUIRED")
+        authenticated = self._authenticate_result(scope)
+        scope = self._scope_without_credential(scope)
+        if isinstance(authenticated, _AuthenticationFailure):
+            status, code = authenticated.status, authenticated.code
+            authenticated = None
+            await self._error(send, status, code)
             return
-        except IdentityUnavailableError:
+
+        context = authenticated.context
+        marker = self._bind_authenticated(authenticated)
+        authenticated = None
+        if marker is None:
             await self._error(send, 503, "IDENTITY_UNAVAILABLE")
             return
 
-        child_scope = dict(scope)
-        child_scope["headers"] = [
-            (key, value)
-            for key, value in scope.get("headers", [])
-            if key.lower() != b"authorization"
-        ]
-        state = dict(scope.get("state") or {})
-        context = authenticated.context
-        if not self._route_is_bound(scope, context.user_sub):
-            code = (
-                "SUBJECT_MISMATCH"
-                if _ADK_USER_PATH.match(str(scope.get("path") or ""))
-                else "ROUTE_NOT_IDENTITY_BOUND"
-            )
-            await self._error(send, 403, code)
-            return
-        state["agentkit_identity"] = context
-        child_scope["state"] = state
-
-        marker = _bind_identity(
-            context,
-            owner=self.identity,
-            user_token=authenticated.user_token,
-        )
         try:
+            if not self._route_is_bound(scope, context.user_sub):
+                path = str(scope.get("path") or "")
+                method = str(scope.get("method") or "").upper()
+                if method == "OPTIONS":
+                    method = self._requested_preflight_method(scope) or ""
+                code = (
+                    "SUBJECT_MISMATCH"
+                    if self._matched_route_subject(path, method) is not None
+                    else "ROUTE_NOT_IDENTITY_BOUND"
+                )
+                await self._error(send, 403, code)
+                return
+            state = dict(scope.get("state") or {})
+            state["agentkit_identity"] = context
+            scope["state"] = state
+
             # A pure ASGI wrapper retains the ContextVar until streaming and
             # cancellation complete; BaseHTTPMiddleware would reset too early.
-            await self.app(child_scope, receive, send)
+            await self.app(scope, receive, send)
         finally:
             _reset_identity(marker)
+            await _drain_identity(marker)

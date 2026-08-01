@@ -52,6 +52,7 @@ export default {
           items: [
             { text: 'SDK 概览', link: '/content/3.agentkit-sdk/1.overview' },
             { text: 'Annotation 使用指南', link: '/content/3.agentkit-sdk/2.annotation' },
+            { text: 'Agent Identity 与 OBO', link: '/agent_identity' },
           ],
         },
         {
@@ -153,6 +154,7 @@ export default {
               items: [
                 { text: 'SDK Overview', link: '/en/content/3.agentkit-sdk/1.overview' },
                 { text: 'Annotations', link: '/en/content/3.agentkit-sdk/2.annotation' },
+                { text: 'Agent Identity and OBO', link: '/agent_identity' },
               ],
             },
             {
