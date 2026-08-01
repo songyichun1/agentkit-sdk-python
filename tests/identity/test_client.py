@@ -68,10 +68,13 @@ def test_exchange_error_does_not_reproduce_a_secret_from_the_backend():
     assert secret not in str(error.value)
     assert error.value.__cause__ is None
     traceback = error.value.__traceback__
+    matched = 0
     while traceback is not None:
         if "/agentkit/" in traceback.tb_frame.f_code.co_filename:
+            matched += 1
             assert secret not in repr(traceback.tb_frame.f_locals)
         traceback = traceback.tb_next
+    assert matched > 0
 
 
 def test_identity_endpoint_environment_override_is_rejected(monkeypatch):

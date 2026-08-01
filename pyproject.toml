@@ -59,10 +59,13 @@ agentkit = "agentkit.toolkit.cli.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agentkit*"]
+include = ["agentkit", "agentkit.*", "agentkit_identity", "agentkit_identity.*"]
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.package-data]
+agentkit_identity = ["py.typed"]
 
 [dependency-groups]
 dev = [

@@ -5,14 +5,14 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-
-from agentkit.identity import AgentIdentityMiddleware
-from agentkit.identity.context import (
+from agentkit_identity.context import (
     IdentityContext,
     _current_binding,
     current_identity,
 )
-from agentkit.identity.errors import IdentityAuthenticationError
+from agentkit_identity.errors import IdentityAuthenticationError
+
+from agentkit.identity import AgentIdentityMiddleware
 
 
 def _context():
@@ -248,12 +248,15 @@ async def _exercise_inner_app_exception_traceback_is_token_free():
         )
     except ValueError as error:
         traceback = error.__traceback__
+        matched = 0
         while traceback is not None:
-            if "/agentkit/" in traceback.tb_frame.f_code.co_filename:
+            if "/agentkit_identity/" in traceback.tb_frame.f_code.co_filename:
+                matched += 1
                 locals_repr = repr(traceback.tb_frame.f_locals)
                 assert "secret.jwt.value" not in locals_repr
                 assert "Bearer secret.jwt.value" not in locals_repr
             traceback = traceback.tb_next
+        assert matched > 0
     else:
         raise AssertionError("inner application failure did not propagate")
 

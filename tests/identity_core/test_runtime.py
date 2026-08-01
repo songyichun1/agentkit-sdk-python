@@ -5,11 +5,11 @@ from dataclasses import replace
 
 import jwt
 import pytest
-from agentkit_identity.context import _bind_identity, _reset_identity
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from agentkit.identity import (
+from agentkit_identity import (
     IdentityRuntimeConfig,
+    IdentityUnavailableError,
     ProtectedTarget,
     RuntimeIdentity,
     TokenExchangeError,
@@ -17,6 +17,7 @@ from agentkit.identity import (
     WorkloadBindingError,
     WorkloadJwtVerifier,
 )
+from agentkit_identity.context import _bind_identity, _reset_identity
 
 TIP_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -33,6 +34,17 @@ class _Verifier:
             issued_at=now,
             claims={"sub": "alice"},
         )
+
+
+def _assert_secret_absent_from_package_traceback(exc, secret):
+    traceback = exc.__traceback__
+    matched = 0
+    while traceback is not None:
+        if "/agentkit_identity/" in traceback.tb_frame.f_code.co_filename:
+            matched += 1
+            assert secret not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
+    assert matched > 0
 
 
 class _Exchange:
@@ -109,6 +121,23 @@ def test_protected_targets_require_an_explicit_trusted_exchange():
             verifier=_Verifier(),
             workload_verifier=_workload_verifier(),
         )
+
+
+def test_verify_inbound_failure_traceback_does_not_retain_authorization():
+    secret = "secret-user-token.payload.signature"
+
+    class _FailingVerifier:
+        def verify(self, compact):
+            raise RuntimeError(f"backend retained {compact}")
+
+    runtime = RuntimeIdentity(
+        replace(_config(), targets={}),
+        verifier=_FailingVerifier(),
+    )
+    with pytest.raises(IdentityUnavailableError) as caught:
+        runtime.verify_inbound(f"Bearer {secret}")
+    assert secret not in str(caught.value)
+    _assert_secret_absent_from_package_traceback(caught.value, secret)
 
 
 def test_for_jwt_is_target_bound_and_cached():

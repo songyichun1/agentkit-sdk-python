@@ -155,6 +155,33 @@ def test_identity_none_preserves_the_existing_unauthenticated_app_surface():
         assert client.get(AGENT_CARD_WELL_KNOWN_PATH).status_code == 200
 
 
+def test_identity_mode_never_falls_back_to_caller_user_without_bound_context():
+    server, _ = _server_with_recording_runner()
+    server.app.user_middleware = [
+        middleware
+        for middleware in server.app.user_middleware
+        if middleware.cls.__name__ != "AgentIdentityMiddleware"
+    ]
+    server.app.middleware_stack = None
+
+    with TestClient(server.app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/invoke",
+            headers={"user_id": "mallory", "session_id": "unbound-session"},
+            json={"prompt": "hello"},
+        )
+
+    assert response.status_code == 500
+    session = asyncio.run(
+        server.server.session_service.get_session(
+            app_name="identity_integration_agent",
+            user_id="mallory",
+            session_id="unbound-session",
+        )
+    )
+    assert session is None
+
+
 def test_identity_mode_does_not_return_or_log_arbitrary_agent_errors(caplog):
     secret = "Bearer tip.jwt.must-not-leak"
     server, _ = _server_with_recording_runner()

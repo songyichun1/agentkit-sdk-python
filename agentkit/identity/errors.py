@@ -1,36 +1,23 @@
-# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd. and/or its affiliates.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
+"""Compatibility aliases for Agent Identity Runtime errors."""
 
-"""Stable, token-safe errors for AgentKit Runtime identity."""
+from agentkit.identity._runtime_dependency import require_identity_runtime
 
-from __future__ import annotations
+_runtime = require_identity_runtime()
 
+IdentityAuthenticationError = _runtime.IdentityAuthenticationError
+IdentityError = _runtime.IdentityError
+IdentityUnavailableError = _runtime.IdentityUnavailableError
+TargetNotConfiguredError = _runtime.TargetNotConfiguredError
+TargetRequestError = _runtime.TargetRequestError
+TokenExchangeError = _runtime.TokenExchangeError
+WorkloadBindingError = _runtime.WorkloadBindingError
 
-class IdentityError(RuntimeError):
-    """Base error whose message must never contain bearer credentials."""
-
-
-class IdentityAuthenticationError(IdentityError):
-    """The inbound user identity is missing or invalid."""
-
-
-class IdentityUnavailableError(IdentityError):
-    """A trusted identity dependency is temporarily unavailable."""
-
-
-class WorkloadBindingError(IdentityError):
-    """The Runtime cannot establish its trusted Workload binding."""
-
-
-class TargetNotConfiguredError(IdentityError):
-    """Business code requested a target that is not registered."""
-
-
-class TokenExchangeError(IdentityError):
-    """Identity could not mint a target-bound workload token."""
-
-
-class TargetRequestError(IdentityError):
-    """A protected-target request failed without exposing its bearer token."""
+__all__ = [
+    "IdentityAuthenticationError",
+    "IdentityError",
+    "IdentityUnavailableError",
+    "TargetNotConfiguredError",
+    "TargetRequestError",
+    "TokenExchangeError",
+    "WorkloadBindingError",
+]

@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import inspect
 import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -68,12 +70,15 @@ from agentkit.apps.agent_server_app.origin import (
 )
 from agentkit.apps.agent_server_app.telemetry import telemetry
 from agentkit.apps.base_app import BaseAgentkitApp
-from agentkit.identity import (
-    AgentIdentityMiddleware,
-    IdentityRuntimeConfig,
-    RuntimeIdentity,
-    current_identity,
-)
+
+if TYPE_CHECKING:
+    from agentkit_identity import IdentityRuntimeConfig, RuntimeIdentity
+else:
+    # Avoid eagerly importing the bundled security module for ordinary
+    # AgentServer startup. Construction imports and validates the concrete
+    # classes before Identity mode can be enabled.
+    IdentityRuntimeConfig = Any
+    RuntimeIdentity = Any
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +210,21 @@ class AgentKitAgentLoader(BaseAgentLoader):
 
 
 class AgentkitAgentServerApp(BaseAgentkitApp):
+    def _request_identity_context(self) -> Any | None:
+        # Older integrations and focused unit-test doubles predate the
+        # ``runtime_identity`` attribute. Treat an absent attribute exactly as
+        # the existing identity-disabled mode. A real identity-enabled server
+        # always sets the attribute during construction and still fails closed
+        # below when request context binding is unavailable.
+        if getattr(self, "runtime_identity", None) is None:
+            return None
+        identity_current = getattr(self, "_identity_current", None)
+        if identity_current is None:
+            raise RuntimeError("Agent Identity Runtime is not initialized")
+        # Identity-enabled handlers must never fall back to a caller-owned
+        # user_id if middleware composition or context binding is broken.
+        return identity_current(required=True)
+
     def __init__(
         self,
         agent: BaseAgent | App | None = None,
@@ -293,11 +313,32 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
 
         self.app = get_fast_api_app(**get_fast_api_app_kwargs)
 
-        self.runtime_identity = (
-            RuntimeIdentity(identity)
-            if isinstance(identity, IdentityRuntimeConfig)
-            else identity
-        )
+        identity_middleware_type = None
+        identity_current = None
+        if identity is None:
+            self.runtime_identity = None
+        else:
+            # Identity is an opt-in security feature. Import it only when
+            # configured, but fail closed if the bundled module is broken.
+            from agentkit.identity import (
+                AgentIdentityMiddleware,
+                IdentityRuntimeConfig,
+                RuntimeIdentity,
+                current_identity,
+            )
+
+            if isinstance(identity, IdentityRuntimeConfig):
+                self.runtime_identity = RuntimeIdentity(identity)
+            elif isinstance(identity, RuntimeIdentity):
+                self.runtime_identity = identity
+            else:
+                raise TypeError(
+                    "identity must be an IdentityRuntimeConfig, "
+                    "RuntimeIdentity, or None"
+                )
+            identity_middleware_type = AgentIdentityMiddleware
+            identity_current = current_identity
+        self._identity_current = identity_current
 
         if needs_cors_compat_middleware:
             add_cors_compat_middleware(self.app, resolved_allow_origins)
@@ -305,7 +346,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         @self.app.post("/run_sse")
         async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
             logger.info("Overriding run_agent_sse endpoint...")
-            identity_context = current_identity(required=False)
+            identity_context = AgentkitAgentServerApp._request_identity_context(self)
             effective_user_id = (
                 identity_context.user_sub if identity_context else req.user_id
             )
@@ -414,8 +455,10 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             # Added after telemetry so identity is the outermost middleware:
             # invalid requests fail before Agent/ADK code and the child scope no
             # longer contains the Authorization header.
+            if identity_middleware_type is None:
+                raise RuntimeError("Agent Identity middleware is not initialized")
             self.app.add_middleware(
-                AgentIdentityMiddleware,
+                identity_middleware_type,
                 identity=self.runtime_identity,
                 public_health_routes=identity_health_routes,
             )
@@ -439,7 +482,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 text="",
             )
 
-            identity_context = current_identity(required=False)
+            identity_context = AgentkitAgentServerApp._request_identity_context(self)
             user_id = (
                 identity_context.user_sub
                 if identity_context

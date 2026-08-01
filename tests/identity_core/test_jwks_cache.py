@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import agentkit_identity.jwt as identity_jwt
 import jwt
-from agentkit_identity.jwt import _PinnedPyJWKClient
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+import agentkit_identity.jwt as identity_jwt
+from agentkit_identity.jwt import _PinnedPyJWKClient
 
 
 def _jwk(public_key, *, kid: str) -> dict[str, object]:

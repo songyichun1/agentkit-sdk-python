@@ -4,16 +4,30 @@ AgentKit Runtime can authenticate a signed-in user, bind the request to the
 Runtime's own Workload Identity, and obtain a short-lived, target-bound workload
 access token (TIP) before calling a protected downstream service.
 
-This API is experimental in the 0.8.x line. Install the Agent Server integration
-explicitly:
+This API is experimental in the 0.8.x line. The credential safety kernel lives
+in the framework-neutral `agentkit_identity` source package, which is bundled
+in and versioned with the same `agentkit-sdk-python` wheel. It is a separate
+code module and dependency boundary, not a separately published artifact.
+
+The core module is present in a normal AgentKit installation. Install the
+`identity-runtime` extra when using the Google ADK-based AgentServer integration:
 
 ```shell
 pip install "agentkit-sdk-python[identity-runtime]"
 ```
 
-This is a data-plane SDK. It is deliberately separate from
+The core is a data-plane SDK. It is deliberately separate from
 `agentkit.sdk.identity`, which configures Runtime inbound authorizers through the
 management plane.
+
+The independent `agentkit_identity` package owns OIDC/TIP verification, the
+private request context and lease, OBO coordination, credential scrubbing and
+target-bound transport. It does not import AgentKit, Google ADK or OpenClaw.
+AgentKit retains its route/session binding policy, Runtime IAM credential
+resolution, Identity OpenAPI adapter, AgentServer composition and CLI login
+session. A missing or incompatible bundled module fails startup when Identity
+is configured; ordinary AgentKit use with `identity=None` does not eagerly load
+the module.
 
 ## Trust model
 
@@ -42,8 +56,8 @@ configuration. It does not infer a trusted Runtime ID from Agent business code.
 
 ```python
 from agentkit.apps import AgentkitAgentServerApp
-from agentkit.identity import (
-    IdentityClient,
+from agentkit.identity import IdentityClient
+from agentkit_identity import (
     IdentityRuntimeConfig,
     ProtectedTarget,
     RuntimeIdentity,
@@ -90,9 +104,18 @@ app = AgentkitAgentServerApp(
 http = identity.authorized_session()
 ```
 
-`AgentIdentityMiddleware` is installed by `AgentkitAgentServerApp`. Credential-
-free browser `OPTIONS` preflight is delegated to the inner CORS middleware or
-router. Before any authenticated Agent or Tool route runs, it:
+`agentkit.identity` continues to re-export the public runtime objects for the
+0.8.x compatibility period, and those aliases are the same class objects as the
+canonical `agentkit_identity` imports. New code should use the canonical package
+for Runtime primitives and import only AgentKit-owned adapters such as
+`IdentityClient` from `agentkit.identity`.
+
+`AgentIdentityMiddleware` is the AgentKit route-policy adapter installed by
+`AgentkitAgentServerApp`. The underlying `IdentityASGIMiddleware` and private
+credential lifecycle stay in the independent source package within the same
+wheel. Credential-free browser
+`OPTIONS` preflight is delegated to the inner CORS middleware or router. Before
+any authenticated Agent or Tool route runs, the combined enforcement path:
 
 1. reads exactly one inbound Bearer ID Token;
 2. verifies signature, algorithm, issuer, audience/client, expiry, issued-at,
@@ -100,7 +123,9 @@ router. Before any authenticated Agent or Tool route runs, it:
 3. removes the raw `Authorization` header from the child ASGI scope;
 4. binds an immutable `IdentityContext` for the whole streaming request;
 5. uses the verified `sub`, not caller-provided `user_id`, on AgentKit's
-   `/invoke` and `/run_sse` paths.
+   `/invoke` and `/run_sse` paths;
+6. fails with a server error if Identity mode is enabled but the verified
+   context is missing, instead of falling back to the request body or headers.
 
 The binding includes a revocable request lease. A detached `asyncio` task may
 inherit the Python context, but it cannot start a new protected operation after
@@ -153,7 +178,9 @@ disables redirects. Business code cannot override the `Authorization` header or
 target host through this transport. It also rejects routing/forwarding headers,
 caller cookies, `TRACE`/`CONNECT`, response cookies, and security-sensitive
 `requests` options. The returned response and any raised SDK error do not retain
-the prepared request that carried the TIP.
+the prepared request or raw connection that carried the TIP. V1 buffers the
+response body before releasing the request lease, rejects caller-selected
+streaming, and rejects configured Requests timeout values above 300 seconds.
 
 JWKS document caching has an explicit bounded TTL (300 seconds by default), and
 resolved signing keys are not cached indefinitely by `kid`. Same-`kid` key

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from agentkit.identity import AuthorizedSession, ProtectedTarget, TargetRequestError
+from agentkit_identity import AuthorizedSession, ProtectedTarget, TargetRequestError
 
 
 class _Identity:
