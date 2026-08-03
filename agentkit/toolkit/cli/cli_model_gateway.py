@@ -234,8 +234,10 @@ def _provider_table(providers: List[mgw.ProvidersForModelGateway]) -> Table:
 def _consumer_table(
     consumers: List[mgw.ConsumersForModelGateway],
     provider_names_by_id: Optional[dict[str, str]] = None,
+    provider_model_names_by_id: Optional[dict[str, str]] = None,
 ) -> Table:
     provider_names_by_id = provider_names_by_id or {}
+    provider_model_names_by_id = provider_model_names_by_id or {}
     table = Table(title="Model Gateway Consumers")
     table.add_column("Consumer ID", style="cyan")
     table.add_column("Name", style="white")
@@ -247,7 +249,7 @@ def _consumer_table(
         table.add_row(
             item.consumer_id or "",
             item.consumer_name or "",
-            _consumer_authz(item, provider_names_by_id),
+            _consumer_authz(item, provider_names_by_id, provider_model_names_by_id),
             tpm,
             tpd,
         )
@@ -282,6 +284,7 @@ def _provider_show(provider: mgw.ProvidersForModelGateway) -> None:
 def _consumer_authz(
     consumer: mgw.ConsumersForModelGateway,
     provider_names_by_id: dict[str, str],
+    provider_model_names_by_id: dict[str, str],
 ) -> str:
     if not consumer.authz_config:
         return ""
@@ -297,8 +300,9 @@ def _consumer_authz(
         if config.allow_all:
             parts.append(f"{provider_name}:*")
         else:
-            for model in config.allowed_provider_model_ids or []:
-                parts.append(f"{provider_name}:{model}")
+            for model_id in config.allowed_provider_model_ids or []:
+                model_name = provider_model_names_by_id.get(model_id, model_id)
+                parts.append(f"{provider_name}:{model_name}")
     return "; ".join(parts)
 
 
@@ -317,6 +321,7 @@ def _consumer_rate_limits(consumer: mgw.ConsumersForModelGateway) -> tuple[str, 
 def _consumer_show(
     consumer: mgw.ConsumersForModelGateway,
     provider_names_by_id: dict[str, str],
+    provider_model_names_by_id: dict[str, str],
 ) -> None:
     tpm, tpd = _consumer_rate_limits(consumer)
     _print_fields(
@@ -324,17 +329,24 @@ def _consumer_show(
             ("Consumer ID", consumer.consumer_id or ""),
             ("Name", consumer.consumer_name or ""),
             ("API Keys", ", ".join(consumer.api_keys or [])),
-            ("Authorization", _consumer_authz(consumer, provider_names_by_id)),
+            (
+                "Authorization",
+                _consumer_authz(
+                    consumer,
+                    provider_names_by_id,
+                    provider_model_names_by_id,
+                ),
+            ),
             ("TPM", tpm),
             ("TPD", tpd),
         ]
     )
 
 
-def _provider_names_by_id(
+def _provider_authz_display_maps(
     client: AgentkitModelGatewayClient,
     model_gateway_id: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str]]:
     resp = client.list_model_gateway_providers(
         mgw.ListModelGatewayProvidersRequest(
             model_gateway_id=model_gateway_id,
@@ -342,11 +354,19 @@ def _provider_names_by_id(
             page_size=100,
         )
     )
-    return {
-        item.provider_id: item.provider_name or item.provider_id
-        for item in resp.providers or []
-        if item.provider_id
-    }
+    provider_names_by_id = {}
+    provider_model_names_by_id = {}
+    for item in resp.providers or []:
+        if item.provider_id:
+            provider_names_by_id[item.provider_id] = (
+                item.provider_name or item.provider_id
+            )
+        for model in item.provider_models or []:
+            if model.provider_model_id:
+                provider_model_names_by_id[model.provider_model_id] = (
+                    model.model_name or model.provider_model_id
+                )
+    return provider_names_by_id, provider_model_names_by_id
 
 
 def _find_provider_by_name(
@@ -423,10 +443,24 @@ def _build_authz_config(
         provider_name, model_name = item.split("/", 1)
         provider_name = _require_value("--allow-models provider name", provider_name)
         model_name = _require_value("--allow-models model name", model_name)
-        provider = _find_provider_by_name(client, model_gateway_id, provider_name)
+        provider_item = _find_provider_by_name(client, model_gateway_id, provider_name)
+        provider_resp = client.get_model_gateway_provider(
+            mgw.GetModelGatewayProviderRequest(provider_id=provider_item.provider_id)
+        )
+        provider = provider_resp.provider or provider_item
         provider_id = provider.provider_id or ""
+        provider_model_id = ""
+        for model in provider.provider_models or []:
+            if model.model_name == model_name:
+                provider_model_id = model.provider_model_id or ""
+                break
+        if not provider_model_id:
+            raise typer.BadParameter(
+                f"Model not found or has no ID for provider '{provider_name}': "
+                f"{model_name}"
+            )
         if provider_id not in allow_all_provider_ids:
-            grouped.setdefault(provider_id, []).append(model_name)
+            grouped.setdefault(provider_id, []).append(provider_model_id)
 
     provider_authz_configs = [
         mgw.ProviderAuthzConfigsForModelGateway(
@@ -490,7 +524,7 @@ def show_example_command(
             raise typer.BadParameter(f"Unsupported provider protocol: {protocol}")
 
         provider_models = [
-            item.model_name
+            (item.provider_model_id or "", item.model_name)
             for item in provider_resp.provider.provider_models or []
             if item.model_name
         ]
@@ -501,22 +535,24 @@ def show_example_command(
         authz_config = consumer_resp.consumer.authz_config
         accessible_models: List[str] = []
         if authz_config and authz_config.allow_all:
-            accessible_models = provider_models
+            accessible_models = [model_name for _, model_name in provider_models]
         elif authz_config and authz_config.provider_authz_configs:
             allow_all_models = False
-            allowed_model_names: set[str] = set()
+            allowed_model_ids: set[str] = set()
             for config in authz_config.provider_authz_configs:
                 if config.provider_id != provider_id:
                     continue
                 if config.allow_all:
                     allow_all_models = True
                     break
-                allowed_model_names.update(config.allowed_provider_model_ids or [])
+                allowed_model_ids.update(config.allowed_provider_model_ids or [])
             if allow_all_models:
-                accessible_models = provider_models
+                accessible_models = [model_name for _, model_name in provider_models]
             else:
                 accessible_models = [
-                    model for model in provider_models if model in allowed_model_names
+                    model_name
+                    for model_id, model_name in provider_models
+                    if model_id in allowed_model_ids
                 ]
         if not accessible_models:
             console.print(
@@ -856,10 +892,15 @@ def consumer_list_command(
                 page_size=100,
             )
         )
+        provider_names_by_id, provider_model_names_by_id = _provider_authz_display_maps(
+            client,
+            gateway_id,
+        )
         console.print(
             _consumer_table(
                 resp.consumers or [],
-                _provider_names_by_id(client, gateway_id),
+                provider_names_by_id,
+                provider_model_names_by_id,
             )
         )
     except Exception as e:
@@ -882,7 +923,15 @@ def consumer_show_command(
             mgw.GetModelGatewayConsumerRequest(consumer_id=consumer.consumer_id)
         )
         if resp.consumer:
-            _consumer_show(resp.consumer, _provider_names_by_id(client, gateway_id))
+            (
+                provider_names_by_id,
+                provider_model_names_by_id,
+            ) = _provider_authz_display_maps(client, gateway_id)
+            _consumer_show(
+                resp.consumer,
+                provider_names_by_id,
+                provider_model_names_by_id,
+            )
     except Exception as e:
         _print_api_error("GetModelGatewayConsumer", e)
         raise typer.Exit(1)

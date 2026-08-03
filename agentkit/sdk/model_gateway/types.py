@@ -96,6 +96,11 @@ class ProviderAuthzConfigsForModelGateway(ModelGatewayBaseModel):
 
 
 class ProviderModelsForModelGateway(ModelGatewayBaseModel):
+    provider_model_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("ProviderModelId", "ProviderModelID"),
+        serialization_alias="ProviderModelId",
+    )
     model_name: Optional[str] = Field(default=None, alias="ModelName")
 
 
