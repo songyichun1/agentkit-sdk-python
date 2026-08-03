@@ -107,14 +107,14 @@ def _require_allow_models(values: Optional[List[str]]) -> Optional[List[str]]:
     if not values:
         return None
 
-    normalized_values = _require_values("--allow-models", values)
+    normalized_values = _require_values("--allow-model", values)
     for item in normalized_values:
         if "/" not in item:
-            _require_value("--allow-models provider name", item)
+            _require_value("--allow-model provider name", item)
             continue
         provider_name, model_name = item.split("/", 1)
-        _require_value("--allow-models provider name", provider_name)
-        _require_value("--allow-models model name", model_name)
+        _require_value("--allow-model provider name", provider_name)
+        _require_value("--allow-model model name", model_name)
     return normalized_values
 
 
@@ -435,14 +435,14 @@ def _build_authz_config(
     allow_all_provider_ids: set[str] = set()
     for item in allow_models:
         if "/" not in item:
-            provider_name = _require_value("--allow-models provider name", item)
+            provider_name = _require_value("--allow-model provider name", item)
             provider = _find_provider_by_name(client, model_gateway_id, provider_name)
             allow_all_provider_ids.add(provider.provider_id or "")
             grouped.pop(provider.provider_id or "", None)
             continue
         provider_name, model_name = item.split("/", 1)
-        provider_name = _require_value("--allow-models provider name", provider_name)
-        model_name = _require_value("--allow-models model name", model_name)
+        provider_name = _require_value("--allow-model provider name", provider_name)
+        model_name = _require_value("--allow-model model name", model_name)
         provider_item = _find_provider_by_name(client, model_gateway_id, provider_name)
         provider_resp = client.get_model_gateway_provider(
             mgw.GetModelGatewayProviderRequest(provider_id=provider_item.provider_id)
@@ -670,8 +670,8 @@ def activate_command(
 def provider_add_command(
     name: str = typer.Option(..., "--name", help="Provider name"),
     base_url: str = typer.Option(..., "--base-url", help="Provider base URL"),
-    api_keys: List[str] = typer.Option(..., "--api-keys", help="API key, repeatable"),
-    models: List[str] = typer.Option(..., "--models", help="Model name, repeatable"),
+    api_keys: List[str] = typer.Option(..., "--api-key", help="API key, repeatable"),
+    models: List[str] = typer.Option(..., "--model", help="Model name, repeatable"),
     protocol: List[str] = typer.Option(
         ["openai"], "--protocol", help="openai or anthropic, exactly once"
     ),
@@ -680,8 +680,8 @@ def provider_add_command(
     """Add a provider."""
     name = _require_value("--name", name)
     base_url = _require_value("--base-url", base_url)
-    api_keys = _require_values("--api-keys", api_keys)
-    models = _require_values("--models", models)
+    api_keys = _require_values("--api-key", api_keys)
+    models = _require_values("--model", models)
     protocol = _require_single_protocol(protocol)
     try:
         client = _client(region)
@@ -760,10 +760,10 @@ def provider_update_command(
         None, "--base-url", help="Provider base URL"
     ),
     api_keys: Optional[List[str]] = typer.Option(
-        None, "--api-keys", help="API key, repeatable"
+        None, "--api-key", help="API key, repeatable"
     ),
     models: Optional[List[str]] = typer.Option(
-        None, "--models", help="Model name, repeatable"
+        None, "--model", help="Model name, repeatable"
     ),
     protocol: Optional[List[str]] = typer.Option(
         None, "--protocol", help="openai or anthropic, repeatable"
@@ -775,9 +775,9 @@ def provider_update_command(
     if base_url is not None:
         base_url = _require_value("--base-url", base_url)
     if api_keys is not None:
-        api_keys = _require_values("--api-keys", api_keys)
+        api_keys = _require_values("--api-key", api_keys)
     if models is not None:
-        models = _require_values("--models", models)
+        models = _require_values("--model", models)
     if protocol:
         protocol = _require_single_protocol(protocol)
     try:
@@ -870,7 +870,7 @@ def consumer_add_command(
     name: str = typer.Option(..., "--name", help="Consumer name"),
     allow_models: Optional[List[str]] = typer.Option(
         None,
-        "--allow-models",
+        "--allow-model",
         help="provider-name or provider-name/model-name, repeatable",
     ),
     tpm: Optional[int] = typer.Option(None, "--tpm", help="Tokens per minute"),
@@ -969,7 +969,7 @@ def consumer_update_command(
     name: str = typer.Option(..., "--name", help="Consumer name"),
     allow_models: Optional[List[str]] = typer.Option(
         None,
-        "--allow-models",
+        "--allow-model",
         help="provider-name or provider-name/model-name, repeatable",
     ),
     tpm: Optional[int] = typer.Option(None, "--tpm", help="Tokens per minute"),
