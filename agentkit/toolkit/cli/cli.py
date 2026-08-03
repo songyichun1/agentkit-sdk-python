@@ -33,6 +33,7 @@ from agentkit.toolkit.cli.cli_status import status_command
 from agentkit.toolkit.cli.cli_destroy import destroy_command
 from agentkit.toolkit.cli.cli_memory import memory_app
 from agentkit.toolkit.cli.cli_knowledge import knowledge_app
+from agentkit.toolkit.cli.cli_model_gateway import model_gateway_app
 from agentkit.toolkit.cli.cli_tools import tools_app
 from agentkit.toolkit.cli.cli_runtime import runtime_app
 from agentkit.toolkit.cli.cli_skills import skills_app
@@ -123,6 +124,7 @@ app.command(name="credential-hosting")(credential_hosting_command)
 app.add_typer(auth_app, name="auth")
 app.add_typer(memory_app, name="memory")
 app.add_typer(knowledge_app, name="knowledge")
+app.add_typer(model_gateway_app, name="model-gateway")
 app.add_typer(tools_app, name="tools")
 app.add_typer(runtime_app, name="runtime")
 app.add_typer(skills_app, name="skills")
