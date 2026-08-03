@@ -225,7 +225,7 @@ class ListModelGatewaysResponse(ModelGatewayBaseModel):
 # CreateModelGatewayProvider - Request
 class CreateModelGatewayProviderRequest(ModelGatewayBaseModel):
     model_gateway_id: str = Field(..., alias="ModelGatewayId")
-    provider_type: Optional[str] = Field(default=None, alias="ProviderType")
+    provider_type: str = Field(..., alias="ProviderType")
     provider_name: str = Field(..., alias="ProviderName")
     protocols: Optional[list[str]] = Field(default=None, alias="Protocols")
     provider_source: Optional[str] = Field(default=None, alias="ProviderSource")
