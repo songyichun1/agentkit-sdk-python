@@ -450,6 +450,110 @@ def _build_authz_config(
     )
 
 
+@model_gateway_app.command("show-example")
+def show_example_command(
+    provider: str = typer.Option(..., "--provider", help="Provider name"),
+    consumer: str = typer.Option(..., "--consumer", help="Consumer name"),
+    region: Optional[str] = typer.Option(None, "--region", help="Region override"),
+):
+    """Show a curl example for calling the model gateway."""
+    provider = _require_value("--provider", provider)
+    consumer = _require_value("--consumer", consumer)
+    try:
+        client = _client(region)
+        gateway_id = _resolve_model_gateway_id(client)
+        provider_item = _find_provider_by_name(client, gateway_id, provider)
+        provider_resp = client.get_model_gateway_provider(
+            mgw.GetModelGatewayProviderRequest(provider_id=provider_item.provider_id)
+        )
+        consumer_item = _find_consumer_by_name(client, gateway_id, consumer)
+        consumer_resp = client.get_model_gateway_consumer(
+            mgw.GetModelGatewayConsumerRequest(consumer_id=consumer_item.consumer_id)
+        )
+
+        if not provider_resp.provider:
+            raise typer.BadParameter(f"Provider not found: {provider}")
+        if not consumer_resp.consumer:
+            raise typer.BadParameter(f"Consumer not found: {consumer}")
+
+        access_url = provider_resp.provider.base_url or ""
+        if not access_url:
+            raise typer.BadParameter(f"Provider has no Access URL: {provider}")
+
+        protocols = provider_resp.provider.protocols or []
+        protocol = protocols[0] if protocols else "OpenAICompatible"
+        if protocol == "OpenAICompatible":
+            path = "/chat/completions"
+        elif protocol == "AnthropicCompatible":
+            path = "/messages"
+        else:
+            raise typer.BadParameter(f"Unsupported provider protocol: {protocol}")
+
+        provider_models = [
+            item.model_name
+            for item in provider_resp.provider.provider_models or []
+            if item.model_name
+        ]
+        if not provider_models:
+            raise typer.BadParameter(f"Provider has no model: {provider}")
+
+        provider_id = provider_resp.provider.provider_id or provider_item.provider_id
+        authz_config = consumer_resp.consumer.authz_config
+        accessible_models: List[str] = []
+        if authz_config and authz_config.allow_all:
+            accessible_models = provider_models
+        elif authz_config and authz_config.provider_authz_configs:
+            allow_all_models = False
+            allowed_model_names: set[str] = set()
+            for config in authz_config.provider_authz_configs:
+                if config.provider_id != provider_id:
+                    continue
+                if config.allow_all:
+                    allow_all_models = True
+                    break
+                allowed_model_names.update(config.allowed_provider_model_ids or [])
+            if allow_all_models:
+                accessible_models = provider_models
+            else:
+                accessible_models = [
+                    model for model in provider_models if model in allowed_model_names
+                ]
+        if not accessible_models:
+            console.print(
+                Panel.fit(
+                    f"No accessible model for consumer '{consumer}' "
+                    f"on provider '{provider}'.",
+                    title="ShowModelGatewayExample Warning",
+                    border_style="yellow",
+                )
+            )
+            return
+        model = accessible_models[0]
+
+        api_keys = consumer_resp.consumer.api_keys or []
+        api_key = api_keys[0] if api_keys else ""
+        if not api_key:
+            raise typer.BadParameter(f"Consumer has no API key: {consumer}")
+
+        typer.echo(
+            f'curl "{access_url}{path}" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            f'  -H "Authorization: Bearer {api_key}" \\\n'
+            "  -d '{\n"
+            f'    "model": "{model}",\n'
+            '    "messages": [\n'
+            "      {\n"
+            '        "role": "user",\n'
+            '        "content": "你是谁？"\n'
+            "      }\n"
+            "    ]\n"
+            "  }'"
+        )
+    except Exception as e:
+        _print_api_error("ShowModelGatewayExample", e)
+        raise typer.Exit(1)
+
+
 @model_gateway_app.command("activate")
 def activate_command(
     apig_gateway_id: Optional[str] = typer.Option(
