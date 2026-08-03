@@ -70,11 +70,7 @@ class CredentialsForModelGateway(ModelGatewayBaseModel):
 
 
 class ModelGatewaysForModelGateway(ModelGatewayBaseModel):
-    model_gateway_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("ModelGatewayId", "ModelGatewayID"),
-        serialization_alias="ModelGatewayId",
-    )
+    model_gateway_id: Optional[str] = Field(default=None, alias="ModelGatewayId")
     retry_policy: Optional[RetryPolicyForModelGateway] = Field(
         default=None, alias="RetryPolicy"
     )
@@ -96,30 +92,18 @@ class ProviderAuthzConfigsForModelGateway(ModelGatewayBaseModel):
 
 
 class ProviderModelsForModelGateway(ModelGatewayBaseModel):
-    provider_model_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("ProviderModelId", "ProviderModelID"),
-        serialization_alias="ProviderModelId",
-    )
+    provider_model_id: Optional[str] = Field(default=None, alias="ProviderModelId")
     model_name: Optional[str] = Field(default=None, alias="ModelName")
 
 
 class ProviderSpecForModelGateway(ModelGatewayBaseModel):
-    base_url: Optional[str] = Field(default=None, alias="BaseURL")
+    base_url: Optional[str] = Field(default=None, alias="BaseUrl")
 
 
 class ProvidersForModelGateway(ModelGatewayBaseModel):
-    provider_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("ProviderId", "ProviderID"),
-        serialization_alias="ProviderId",
-    )
+    provider_id: Optional[str] = Field(default=None, alias="ProviderId")
     provider_name: Optional[str] = Field(default=None, alias="ProviderName")
-    model_gateway_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("ModelGatewayId", "ModelGatewayID"),
-        serialization_alias="ModelGatewayId",
-    )
+    model_gateway_id: Optional[str] = Field(default=None, alias="ModelGatewayId")
     base_url: Optional[str] = Field(default=None, alias="BaseUrl")
     provider_type: Optional[str] = Field(default=None, alias="ProviderType")
     protocols: Optional[list[str]] = Field(default=None, alias="Protocols")
