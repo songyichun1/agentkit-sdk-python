@@ -795,7 +795,34 @@ def provider_update_command(
         if api_keys is not None:
             request_kwargs["credentials"] = _build_credentials(api_keys)
         if models is not None:
-            request_kwargs["provider_models"] = _provider_models(models)
+            provider_resp = client.get_model_gateway_provider(
+                mgw.GetModelGatewayProviderRequest(provider_id=provider.provider_id)
+            )
+            current_provider = provider_resp.provider or provider
+            provider_models = []
+            existing_models = {
+                item.model_name: item
+                for item in current_provider.provider_models or []
+                if item.model_name
+            }
+            for model_name in models:
+                existing_model = existing_models.get(model_name)
+                if not existing_model:
+                    provider_models.append(
+                        mgw.ProviderModelsForModelGateway(model_name=model_name)
+                    )
+                    continue
+                if not existing_model.provider_model_id:
+                    raise typer.BadParameter(
+                        f"Existing provider model has no ID: {model_name}"
+                    )
+                provider_models.append(
+                    mgw.ProviderModelsForModelGateway(
+                        provider_model_id=existing_model.provider_model_id,
+                        model_name=model_name,
+                    )
+                )
+            request_kwargs["provider_models"] = provider_models
         resp = client.update_model_gateway_provider(
             mgw.UpdateModelGatewayProviderRequest(
                 provider_id=provider.provider_id,
