@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 import json
 import time
 from typing import List, Optional
@@ -33,6 +34,14 @@ console = Console()
 MODEL_GATEWAY_RUNNING_STATUS = "Running"
 MODEL_GATEWAY_FAILED_STATUSES = {"CreatedFailed", "UpdatedFailed", "DeletedFailed"}
 MODEL_GATEWAY_ERROR_STATUSES = MODEL_GATEWAY_FAILED_STATUSES | {"Error"}
+
+
+class ModelGatewayExampleType(str, Enum):
+    curl = "curl"
+    openai = "openai"
+    anthropic = "anthropic"
+    agentkit = "agentkit"
+
 
 model_gateway_app = typer.Typer(
     name="model-gateway",
@@ -488,9 +497,14 @@ def _build_authz_config(
 def show_example_command(
     provider: str = typer.Option(..., "--provider", help="Provider name"),
     consumer: str = typer.Option(..., "--consumer", help="Consumer name"),
+    example: ModelGatewayExampleType = typer.Option(
+        ModelGatewayExampleType.curl,
+        "--example",
+        help="Example type: curl, openai, anthropic, or agentkit",
+    ),
     region: Optional[str] = typer.Option(None, "--region", help="Region override"),
 ):
-    """Show a curl example for calling the model gateway."""
+    """Show an example for calling the model gateway."""
     provider = _require_value("--provider", provider)
     consumer = _require_value("--consumer", consumer)
     try:
@@ -513,6 +527,11 @@ def show_example_command(
         access_url = provider_resp.provider.base_url or ""
         if not access_url:
             raise typer.BadParameter(f"Provider has no Access URL: {provider}")
+
+        api_keys = consumer_resp.consumer.api_keys or []
+        api_key = api_keys[0] if api_keys else ""
+        if not api_key:
+            raise typer.BadParameter(f"Consumer has no API key: {consumer}")
 
         protocols = provider_resp.provider.protocols or []
         protocol = protocols[0] if protocols else "OpenAICompatible"
@@ -566,25 +585,77 @@ def show_example_command(
             return
         model = accessible_models[0]
 
-        api_keys = consumer_resp.consumer.api_keys or []
-        api_key = api_keys[0] if api_keys else ""
-        if not api_key:
-            raise typer.BadParameter(f"Consumer has no API key: {consumer}")
-
-        typer.echo(
-            f'curl "{access_url}{path}" \\\n'
-            '  -H "Content-Type: application/json" \\\n'
-            f'  -H "Authorization: Bearer {api_key}" \\\n'
-            "  -d '{\n"
-            f'    "model": "{model}",\n'
-            '    "messages": [\n'
-            "      {\n"
-            '        "role": "user",\n'
-            '        "content": "你是谁？"\n'
-            "      }\n"
-            "    ]\n"
-            "  }'"
-        )
+        if example == ModelGatewayExampleType.curl:
+            typer.echo(
+                f'curl "{access_url}{path}" \\\n'
+                '  -H "Content-Type: application/json" \\\n'
+                f'  -H "Authorization: Bearer {api_key}" \\\n'
+                "  -d '{\n"
+                f'    "model": "{model}",\n'
+                '    "messages": [\n'
+                "      {\n"
+                '        "role": "user",\n'
+                '        "content": "Hello, world"\n'
+                "      }\n"
+                "    ]\n"
+                "  }'"
+            )
+        elif example == ModelGatewayExampleType.openai:
+            if protocol != "OpenAICompatible":
+                raise typer.BadParameter(
+                    f"OpenAI example requires OpenAI-Compatible protocol: {protocol}"
+                )
+            typer.echo(
+                "from openai import OpenAI\n\n"
+                "client = OpenAI(\n"
+                f'    api_key="{api_key}",\n'
+                f'    base_url="{access_url}",\n'
+                ")\n\n"
+                "completion = client.chat.completions.create(\n"
+                f'    model="{model}",\n'
+                "    messages=[\n"
+                "        {\n"
+                '            "role": "user",\n'
+                '            "content": "你是谁？",\n'
+                "        }\n"
+                "    ],\n"
+                ")\n\n"
+                "print(completion.choices[0].message)"
+            )
+        elif example == ModelGatewayExampleType.anthropic:
+            if protocol != "AnthropicCompatible":
+                raise typer.BadParameter(
+                    f"Anthropic example requires Anthropic-Compatible protocol: {protocol}"
+                )
+            typer.echo(
+                "from anthropic import Anthropic\n\n"
+                "client = Anthropic(\n"
+                f'    api_key="{api_key}",\n'
+                f'    base_url="{access_url}",\n'
+                ")\n\n"
+                "for message in client.messages.create(\n"
+                "    max_tokens=1024,\n"
+                "    messages=[\n"
+                "        {\n"
+                '            "role": "user",\n'
+                '            "content": "Hello, world",\n'
+                "        }\n"
+                "    ],\n"
+                f'    model="{model}",\n'
+                "):\n"
+                "    print(message)"
+            )
+        elif example == ModelGatewayExampleType.agentkit:
+            if protocol != "OpenAICompatible":
+                raise typer.BadParameter(
+                    f"AgentKit example requires OpenAI-Compatible protocol: {protocol}"
+                )
+            typer.echo(
+                "agentkit config \n"
+                f"  -e MODEL_AGENT_NAME={model} \\\n"
+                f"  -e MODEL_AGENT_API_BASE={access_url} \\\n"
+                f"  -e MODEL_AGENT_API_KEY={api_key}"
+            )
     except Exception as e:
         _print_api_error("ShowModelGatewayExample", e)
         raise typer.Exit(1)
