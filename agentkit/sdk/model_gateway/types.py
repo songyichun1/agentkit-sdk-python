@@ -35,7 +35,7 @@ class ApiKeysForModelGateway(ModelGatewayBaseModel):
 
 
 class AuthzConfigForModelGateway(ModelGatewayBaseModel):
-    allow_all: Optional[bool] = Field(default=None, alias="AllowAll")
+    allow_all_providers: Optional[bool] = Field(default=None, alias="AllowAllProviders")
     provider_authz_configs: Optional[list[ProviderAuthzConfigsForModelGateway]] = Field(
         default=None, alias="ProviderAuthzConfigs"
     )
@@ -85,7 +85,9 @@ class ModelGatewaysForModelGateway(ModelGatewayBaseModel):
 
 class ProviderAuthzConfigsForModelGateway(ModelGatewayBaseModel):
     provider_id: Optional[str] = Field(default=None, alias="ProviderId")
-    allow_all: Optional[bool] = Field(default=None, alias="AllowAll")
+    allow_all_provider_models: Optional[bool] = Field(
+        default=None, alias="AllowAllProviderModels"
+    )
     allowed_provider_model_ids: Optional[list[str]] = Field(
         default=None, alias="AllowedProviderModelIds"
     )

@@ -297,7 +297,7 @@ def _consumer_authz(
 ) -> str:
     if not consumer.authz_config:
         return ""
-    if consumer.authz_config.allow_all:
+    if consumer.authz_config.allow_all_providers:
         return "All"
     if not consumer.authz_config.provider_authz_configs:
         return ""
@@ -306,7 +306,7 @@ def _consumer_authz(
     for config in consumer.authz_config.provider_authz_configs:
         provider_id = config.provider_id or ""
         provider_name = provider_names_by_id.get(provider_id, provider_id)
-        if config.allow_all:
+        if config.allow_all_provider_models:
             parts.append(f"{provider_name}:*")
         else:
             for model_id in config.allowed_provider_model_ids or []:
@@ -474,21 +474,21 @@ def _build_authz_config(
     provider_authz_configs = [
         mgw.ProviderAuthzConfigsForModelGateway(
             provider_id=provider_id,
-            allow_all=True,
+            allow_all_provider_models=True,
         )
         for provider_id in allow_all_provider_ids
     ]
     provider_authz_configs.extend(
         mgw.ProviderAuthzConfigsForModelGateway(
             provider_id=provider_id,
-            allow_all=False,
+            allow_all_provider_models=False,
             allowed_provider_model_ids=models,
         )
         for provider_id, models in grouped.items()
     )
 
     return mgw.AuthzConfigForModelGateway(
-        allow_all=False,
+        allow_all_providers=False,
         provider_authz_configs=provider_authz_configs,
     )
 
@@ -553,7 +553,7 @@ def show_example_command(
         provider_id = provider_resp.provider.provider_id or provider_item.provider_id
         authz_config = consumer_resp.consumer.authz_config
         accessible_models: List[str] = []
-        if authz_config and authz_config.allow_all:
+        if authz_config and authz_config.allow_all_providers:
             accessible_models = [model_name for _, model_name in provider_models]
         elif authz_config and authz_config.provider_authz_configs:
             allow_all_models = False
@@ -561,7 +561,7 @@ def show_example_command(
             for config in authz_config.provider_authz_configs:
                 if config.provider_id != provider_id:
                     continue
-                if config.allow_all:
+                if config.allow_all_provider_models:
                     allow_all_models = True
                     break
                 allowed_model_ids.update(config.allowed_provider_model_ids or [])
