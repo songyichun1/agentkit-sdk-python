@@ -45,17 +45,17 @@ class ModelGatewayExampleType(str, Enum):
 
 model_gateway_app = typer.Typer(
     name="model-gateway",
-    help="Manage AgentKit Model Gateway",
+    help="Manage AgentKit Model Gateway.",
     add_completion=False,
 )
 provider_app = typer.Typer(
     name="provider",
-    help="Manage model gateway providers",
+    help="Manage model gateway providers.",
     add_completion=False,
 )
 consumer_app = typer.Typer(
     name="consumer",
-    help="Manage model gateway consumers",
+    help="Manage model gateway consumers.",
     add_completion=False,
 )
 
@@ -668,7 +668,7 @@ def activate_command(
     ),
     region: Optional[str] = typer.Option(None, "--region", help="Region override"),
 ):
-    """Create a model gateway with an initial consumer."""
+    """Activate the model gateway."""
     if apig_gateway_id is not None:
         apig_gateway_id = _require_value("--apig-gateway-id", apig_gateway_id)
     try:
