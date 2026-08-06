@@ -14,12 +14,11 @@
 
 from typing import Callable
 
-from opentelemetry import trace
 from opentelemetry import context as context_api
+from opentelemetry import trace
 
 from agentkit.apps.agent_server_app.telemetry import telemetry
-
-_EXCLUDED_HEADERS = {"authorization", "token"}
+from agentkit.apps.auth.inbound import redact_inbound_auth_headers
 
 
 class AgentkitTelemetryHTTPMiddleware:
@@ -37,9 +36,7 @@ class AgentkitTelemetryHTTPMiddleware:
         span = telemetry.tracer.start_span(name="agent_server_request")
         ctx = trace.set_span_in_context(span)
         token = context_api.attach(ctx)
-        headers = {
-            k: v for k, v in headers.items() if k.lower() not in _EXCLUDED_HEADERS
-        }
+        headers = redact_inbound_auth_headers(headers)
 
         # Currently unable to retrieve user_id and session_id from headers; keep logic for future use
         user_id = headers.get("user_id")
