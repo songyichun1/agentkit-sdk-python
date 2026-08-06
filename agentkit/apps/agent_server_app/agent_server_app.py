@@ -61,6 +61,15 @@ except ImportError:  # pragma: no cover - default migration path avoids veadk.
 from agentkit.apps.agent_server_app.middleware import (
     AgentkitTelemetryHTTPMiddleware,
 )
+from agentkit.apps.agent_server_app.credential_service import (
+    AgentkitCredentialService,
+)
+from agentkit.apps.agent_server_app.inbound_auth_adapter import (
+    InboundAuthCaptureMiddleware,
+    build_a2a_inbound_auth_executor_factory,
+    save_inbound_auth,
+)
+from agentkit.apps.auth.inbound import redact_inbound_auth_headers
 from agentkit.apps.agent_server_app.origin import (
     add_cors_compat_middleware,
     adk_supports_regex_origins,
@@ -131,6 +140,10 @@ def _create_a2a_runner(
             short_term_memory=short_term_memory
             if _is_veadk_short_term_memory(short_term_memory)
             else None,
+            app_name=root_agent.name,
+            session_service=session_service,
+            memory_service=memory_service,
+            credential_service=credential_service,
         )
     return Runner(
         agent=root_agent,
@@ -233,10 +246,12 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         app: App | None = None,
         allow_origins: list[str] | None = None,
         allow_origin_regex: str | list[str] | None = None,
+        enable_auth: bool = False,
         identity: IdentityRuntimeConfig | RuntimeIdentity | None = None,
         identity_health_routes: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
+        self._enable_auth_enabled = enable_auth
 
         if app is not None and agent is not None:
             raise TypeError("Only one of 'agent' or 'app' can be provided.")
@@ -250,7 +265,9 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         memory_service = _resolve_memory_service(root_agent)
 
         _artifact_service = InMemoryArtifactService()
-        _credential_service = InMemoryCredentialService()
+        _credential_service = (
+            AgentkitCredentialService() if enable_auth else InMemoryCredentialService()
+        )
 
         _eval_sets_manager = LocalEvalSetsManager(agents_dir=".")
         _eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=".")
@@ -274,14 +291,21 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             artifact_service=_artifact_service,
             credential_service=_credential_service,
         )
-        _a2a_server_app = to_a2a(agent=root_agent, runner=runner)
+        to_a2a_kwargs: dict[str, Any] = {"agent": root_agent, "runner": runner}
+        if enable_auth:
+            to_a2a_kwargs["agent_executor_factory"] = (
+                build_a2a_inbound_auth_executor_factory(
+                    runner=runner,
+                    app_name=root_agent.name,
+                    credential_service=_credential_service,
+                )
+            )
+        _a2a_server_app = to_a2a(**to_a2a_kwargs)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             # trigger A2A server app startup
-            logger.info(
-                "Triggering A2A server app lifespan within API server..."
-            )
+            logger.info("Triggering A2A server app lifespan within API server...")
             async with _run_a2a_app_lifespan(_a2a_server_app):
                 yield
 
@@ -344,12 +368,21 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             add_cors_compat_middleware(self.app, resolved_allow_origins)
 
         @self.app.post("/run_sse")
-        async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+        async def run_agent_sse(
+            req: RunAgentRequest, request: Request
+        ) -> StreamingResponse:
             logger.info("Overriding run_agent_sse endpoint...")
             identity_context = AgentkitAgentServerApp._request_identity_context(self)
             effective_user_id = (
                 identity_context.user_sub if identity_context else req.user_id
             )
+            if getattr(self, "_enable_auth_enabled", False):
+                await save_inbound_auth(
+                    request=request,
+                    app_name=req.app_name,
+                    user_id=effective_user_id,
+                    credential_service=self.server.credential_service,
+                )
             # SSE endpoint
             session = await self.server.session_service.get_session(
                 app_name=req.app_name,
@@ -423,9 +456,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                         telemetry.trace_agent_server_finish(
                             path="/run_sse", func_result="", exception=e
                         )
-                        error_payload = (
-                            f"data: {json.dumps({'error': str(e)})}\n\n"
-                        )
+                        error_payload = f"data: {json.dumps({'error': str(e)})}\n\n"
                 if error_payload is not None:
                     # Yield only after the caught exception variable and its
                     # traceback have left scope in identity mode.
@@ -462,6 +493,8 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 identity=self.runtime_identity,
                 public_health_routes=identity_health_routes,
             )
+        if enable_auth:
+            self.app.add_middleware(InboundAuthCaptureMiddleware)
 
         async def _invoke_compat(request: Request):
             # Use current request span from middleware for telemetry
@@ -469,11 +502,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
 
             # Extract headers (fallback keys supported)
             headers = request.headers
-            telemetry_headers = {
-                k: v
-                for k, v in dict(headers).items()
-                if k.lower() not in {"authorization", "token"}
-            }
+            telemetry_headers = redact_inbound_auth_headers(dict(headers))
             # trace request attributes on current span
             telemetry.trace_agent_server(
                 func_name="_invoke_compat",
@@ -501,6 +530,13 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 )
                 raise exception
             app_name = app_names[0]
+            if getattr(self, "_enable_auth_enabled", False):
+                await save_inbound_auth(
+                    request=request,
+                    app_name=app_name,
+                    user_id=user_id,
+                    credential_service=self.server.credential_service,
+                )
 
             # Parse payload and convert to ADK Content
             try:
@@ -541,9 +577,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                             user_id=user_id,
                             session_id=session_id,
                             new_message=content,
-                            run_config=RunConfig(
-                                streaming_mode=StreamingMode.SSE
-                            ),
+                            run_config=RunConfig(streaming_mode=StreamingMode.SSE),
                         )
                     ) as agen:
                         async for event in agen:

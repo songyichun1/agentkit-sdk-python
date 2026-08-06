@@ -278,18 +278,30 @@ def test_create_a2a_runner_preserves_veadk_runner_for_veadk_agent_with_session_s
 
     root_agent = BaseAgent(name="legacy_session_agent")
     session_service = InMemorySessionService()
+    memory_service = object()
+    artifact_service = object()
+    credential_service = object()
 
     runner = _create_a2a_runner(
         root_agent=root_agent,
         short_term_memory=session_service,
         session_service=session_service,
-        memory_service=object(),
-        artifact_service=object(),
-        credential_service=object(),
+        memory_service=memory_service,
+        artifact_service=artifact_service,
+        credential_service=credential_service,
     )
 
     assert isinstance(runner, _FakeVeadkRunner)
-    assert calls == [{"agent": root_agent, "short_term_memory": None}]
+    assert calls == [
+        {
+            "agent": root_agent,
+            "short_term_memory": None,
+            "app_name": "legacy_session_agent",
+            "session_service": session_service,
+            "memory_service": memory_service,
+            "credential_service": credential_service,
+        }
+    ]
 
 
 def test_create_a2a_runner_uses_adk_runner_for_plain_adk_agent_with_session_service(
@@ -353,18 +365,30 @@ def test_create_a2a_runner_preserves_veadk_runner_for_veadk_agent_without_memory
 
     root_agent = BaseAgent(name="veadk_agent_without_memory")
     session_service = InMemorySessionService()
+    memory_service = object()
+    artifact_service = object()
+    credential_service = object()
 
     runner = _create_a2a_runner(
         root_agent=root_agent,
         short_term_memory=None,
         session_service=session_service,
-        memory_service=object(),
-        artifact_service=object(),
-        credential_service=object(),
+        memory_service=memory_service,
+        artifact_service=artifact_service,
+        credential_service=credential_service,
     )
 
     assert isinstance(runner, _FakeVeadkRunner)
-    assert calls == [{"agent": root_agent, "short_term_memory": None}]
+    assert calls == [
+        {
+            "agent": root_agent,
+            "short_term_memory": None,
+            "app_name": "veadk_agent_without_memory",
+            "session_service": session_service,
+            "memory_service": memory_service,
+            "credential_service": credential_service,
+        }
+    ]
 
 
 def test_create_a2a_runner_uses_adk_runner_for_new_default_adk_agent(monkeypatch):

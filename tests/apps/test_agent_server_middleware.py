@@ -103,7 +103,9 @@ def test_http_scope_starts_span_and_calls_trace_agent_server(fake_telemetry):
 
     asyncio.run(mw(scope, _noop_receive, send))
 
-    fake_telemetry.tracer.start_span.assert_called_once_with(name="agent_server_request")
+    fake_telemetry.tracer.start_span.assert_called_once_with(
+        name="agent_server_request"
+    )
     fake_telemetry.trace_agent_server.assert_called_once()
     kwargs = fake_telemetry.trace_agent_server.call_args.kwargs
     assert kwargs["func_name"] == "GET /hello"
@@ -151,6 +153,7 @@ def test_header_exclusion_is_case_insensitive(fake_telemetry):
         "headers": [
             (b"Authorization", b"Bearer x"),
             (b"TOKEN", b"y"),
+            (b"X-Ve-Tip-Token", b"tip"),
             (b"X-Custom", b"keep"),
         ],
     }
@@ -162,10 +165,13 @@ def test_header_exclusion_is_case_insensitive(fake_telemetry):
     # Keys are preserved verbatim; only the lowercased comparison decides exclusion.
     assert "Authorization" not in headers
     assert "TOKEN" not in headers
+    assert "X-Ve-Tip-Token" not in headers
     assert headers == {"X-Custom": "keep"}
 
 
-def test_finish_is_called_only_on_final_body_message_not_on_response_start(fake_telemetry):
+def test_finish_is_called_only_on_final_body_message_not_on_response_start(
+    fake_telemetry,
+):
     async def _app(scope, receive, send):
         # A realistic send sequence: start, then a final body chunk.
         await send({"type": "http.response.start", "status": 200, "headers": []})
@@ -227,7 +233,9 @@ def test_body_message_without_more_body_key_defaults_to_finished(fake_telemetry)
     )
 
 
-def test_wrapped_app_exception_records_finish_with_exception_and_reraises(fake_telemetry):
+def test_wrapped_app_exception_records_finish_with_exception_and_reraises(
+    fake_telemetry,
+):
     boom = RuntimeError("downstream failure")
 
     async def _app(scope, receive, send):

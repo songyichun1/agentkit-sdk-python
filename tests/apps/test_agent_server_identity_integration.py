@@ -65,10 +65,11 @@ def _runtime_identity():
     )
 
 
-def _server_with_recording_runner():
+def _server_with_recording_runner(*, enable_auth=False):
     server = AgentkitAgentServerApp(
         agent=BaseAgent(name="identity_integration_agent"),
         identity=_runtime_identity(),
+        enable_auth=enable_auth,
     )
     calls = []
     runner = _RecordingRunner(calls)
@@ -146,6 +147,155 @@ def test_run_sse_uses_verified_subject_for_existing_session():
         )
     assert response.status_code == 200
     assert calls == [{"user_id": "alice", "identity_sub": "alice"}]
+
+
+def test_run_sse_inbound_auth_uses_body_user_id_without_identity():
+    server = AgentkitAgentServerApp(
+        agent=BaseAgent(name="run_sse_inbound_auth_agent"),
+        enable_auth=True,
+    )
+    asyncio.run(
+        server.server.session_service.create_session(
+            app_name="run_sse_inbound_auth_agent",
+            user_id="body-user",
+            session_id="sse-session",
+        )
+    )
+
+    class _Runner:
+        def run_async(self, **kwargs):
+            async def events():
+                if False:
+                    yield None
+
+            return events()
+
+    async def get_runner_async(app_name):
+        return _Runner()
+
+    server.server.get_runner_async = get_runner_async
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/run_sse",
+            headers={
+                "user_id": "header-user",
+                "X-Ve-TIP-Token": "tip-secret",
+            },
+            json={
+                "appName": "run_sse_inbound_auth_agent",
+                "userId": "body-user",
+                "sessionId": "sse-session",
+                "newMessage": {"role": "user", "parts": [{"text": "hello"}]},
+                "streaming": True,
+            },
+        )
+
+    assert response.status_code == 200
+    credential = asyncio.run(
+        server.server.credential_service.get_credential(
+            app_name="run_sse_inbound_auth_agent",
+            user_id="body-user",
+            credential_key="ve_tip_token",
+        )
+    )
+    assert credential.api_key == "tip-secret"
+    header_credential = asyncio.run(
+        server.server.credential_service.get_credential(
+            app_name="run_sse_inbound_auth_agent",
+            user_id="header-user",
+            credential_key="ve_tip_token",
+        )
+    )
+    assert header_credential is None
+
+
+def test_run_sse_inbound_auth_uses_verified_subject_for_credentials():
+    server, calls = _server_with_recording_runner(enable_auth=True)
+    asyncio.run(
+        server.server.session_service.create_session(
+            app_name="identity_integration_agent",
+            user_id="alice",
+            session_id="sse-session",
+        )
+    )
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/run_sse",
+            headers={
+                "Authorization": "Bearer valid.jwt.value",
+                "X-Ve-TIP-Token": "tip-secret",
+            },
+            json={
+                "appName": "identity_integration_agent",
+                "userId": "mallory",
+                "sessionId": "sse-session",
+                "newMessage": {"role": "user", "parts": [{"text": "hello"}]},
+                "streaming": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert calls == [{"user_id": "alice", "identity_sub": "alice"}]
+    credential = asyncio.run(
+        server.server.credential_service.get_credential(
+            app_name="identity_integration_agent",
+            user_id="alice",
+            credential_key="ve_tip_token",
+        )
+    )
+    assert credential.api_key == "tip-secret"
+    auth_credential = asyncio.run(
+        server.server.credential_service.get_credential(
+            app_name="identity_integration_agent",
+            user_id="alice",
+            credential_key="inbound_auth",
+        )
+    )
+    assert auth_credential.http.scheme == "bearer"
+    assert auth_credential.http.credentials.token == "valid.jwt.value"
+    mallory_credential = asyncio.run(
+        server.server.credential_service.get_credential(
+            app_name="identity_integration_agent",
+            user_id="mallory",
+            credential_key="ve_tip_token",
+        )
+    )
+    assert mallory_credential is None
+
+
+def test_invoke_inbound_auth_captures_authorization_before_identity_scrub():
+    server, calls = _server_with_recording_runner(enable_auth=True)
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/invoke",
+            headers={
+                "Authorization": "Bearer valid.jwt.value",
+                "user_id": "mallory",
+                "session_id": "invoke-session",
+            },
+            json={"prompt": "hello"},
+        )
+
+    assert response.status_code == 200
+    assert calls == [{"user_id": "alice", "identity_sub": "alice"}]
+    credential = asyncio.run(
+        server.server.credential_service.get_credential(
+            app_name="identity_integration_agent",
+            user_id="alice",
+            credential_key="inbound_auth",
+        )
+    )
+    assert credential.http.scheme == "bearer"
+    assert credential.http.credentials.token == "valid.jwt.value"
+    mallory_credential = asyncio.run(
+        server.server.credential_service.get_credential(
+            app_name="identity_integration_agent",
+            user_id="mallory",
+            credential_key="inbound_auth",
+        )
+    )
+    assert mallory_credential is None
 
 
 def test_identity_none_preserves_the_existing_unauthenticated_app_surface():

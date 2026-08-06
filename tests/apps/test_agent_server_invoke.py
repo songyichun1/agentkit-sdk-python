@@ -50,7 +50,6 @@ from google.genai import types as genai_types
 
 import agentkit.apps.agent_server_app.agent_server_app as mod
 
-
 # ---------------------------------------------------------------------------
 # Extract the real _invoke_compat code object from __init__ and rebuild it.
 # ---------------------------------------------------------------------------
@@ -216,6 +215,14 @@ class _FakeSessionService:
         return object()
 
 
+class _FakeCredentialService:
+    def __init__(self) -> None:
+        self.set_calls: list[dict] = []
+
+    async def set_credential(self, **kwargs):
+        self.set_calls.append(kwargs)
+
+
 class _FakeAgentLoader:
     def __init__(self, agents) -> None:
         self._agents = list(agents)
@@ -227,9 +234,12 @@ class _FakeAgentLoader:
 
 
 class _FakeServer:
-    def __init__(self, agent_loader, session_service, runner) -> None:
+    def __init__(
+        self, agent_loader, session_service, runner, credential_service
+    ) -> None:
         self.agent_loader = agent_loader
         self.session_service = session_service
+        self.credential_service = credential_service
         self._runner = runner
         self.get_runner_calls: list = []
 
@@ -243,6 +253,7 @@ class _FakeSelf:
 
     def __init__(self, server) -> None:
         self.server = server
+        self._enable_auth_enabled = False
 
 
 # Records of telemetry calls so tests can assert wiring without touching a
@@ -282,12 +293,8 @@ def _isolate_telemetry_and_span(monkeypatch):
             {"path": path, "func_result": func_result, "exception": exception}
         )
 
-    monkeypatch.setattr(
-        mod.telemetry, "trace_agent_server", _fake_trace_agent_server
-    )
-    monkeypatch.setattr(
-        mod.telemetry, "trace_agent_server_finish", _fake_trace_finish
-    )
+    monkeypatch.setattr(mod.telemetry, "trace_agent_server", _fake_trace_agent_server)
+    monkeypatch.setattr(mod.telemetry, "trace_agent_server_finish", _fake_trace_finish)
     monkeypatch.setattr(mod.trace, "get_current_span", lambda: _FakeSpan())
     yield
 
@@ -303,12 +310,15 @@ def _build(
     existing_session=None,
     events=None,
     run_exc: Exception | None = None,
+    enable_auth: bool = False,
 ):
     runner = _FakeRunner(events if events is not None else [], raise_exc=run_exc)
     session_service = _FakeSessionService(existing_session=existing_session)
     agent_loader = _FakeAgentLoader(agents)
-    server = _FakeServer(agent_loader, session_service, runner)
+    credential_service = _FakeCredentialService()
+    server = _FakeServer(agent_loader, session_service, runner, credential_service)
     fake_self = _FakeSelf(server)
+    fake_self._enable_auth_enabled = enable_auth
     invoke = _bind_invoke_compat(fake_self)
     return invoke, fake_self, server, session_service, runner
 
@@ -365,6 +375,7 @@ def test_invoke_entry_traces_request_with_authorization_and_token_redacted():
         headers={
             "Authorization": "Bearer secret",
             "Token": "abc",
+            "X-Ve-TIP-Token": "tip-secret",
             "user_id": "u1",
             "content-type": "application/json",
         },
@@ -379,8 +390,37 @@ def test_invoke_entry_traces_request_with_authorization_and_token_redacted():
     # Authorization/token (case-insensitively) are stripped from telemetry.
     assert "Authorization" not in entry["headers"]
     assert "Token" not in entry["headers"]
+    assert "X-Ve-TIP-Token" not in entry["headers"]
     assert entry["headers"]["user_id"] == "u1"
     assert entry["headers"]["content-type"] == "application/json"
+
+
+def test_invoke_saves_inbound_auth_for_selected_app_and_effective_user():
+    invoke, _self, server, _ss, _runner = _build(
+        agents=("my_app",), existing_session=object(), enable_auth=True
+    )
+    request = _FakeRequest(
+        headers={
+            "Authorization": "Bearer user-secret",
+            "X-Ve-TIP-Token": "tip-secret",
+            "user_id": "alice",
+        },
+        json_payload={"prompt": "hi"},
+    )
+
+    asyncio.run(invoke(request))
+
+    assert len(server.credential_service.set_calls) == 2
+    auth_call, tip_call = server.credential_service.set_calls
+    assert auth_call["app_name"] == "my_app"
+    assert auth_call["user_id"] == "alice"
+    assert auth_call["credential_key"] == "inbound_auth"
+    assert auth_call["credential"].http.scheme == "bearer"
+    assert auth_call["credential"].http.credentials.token == "user-secret"
+    assert tip_call["app_name"] == "my_app"
+    assert tip_call["user_id"] == "alice"
+    assert tip_call["credential_key"] == "ve_tip_token"
+    assert tip_call["credential"].api_key == "tip-secret"
 
 
 # ===========================================================================
