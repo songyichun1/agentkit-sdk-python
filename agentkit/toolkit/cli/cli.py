@@ -50,7 +50,6 @@ from agentkit.toolkit.cli.cli_add import add_app
 from agentkit.toolkit.cli.cli_list import list_app
 from agentkit.toolkit.cli.cli_delete import delete_app
 from agentkit.toolkit.cli.cli_logs import logs_command
-from agentkit.toolkit.cli.plugin_loader import load_cli_plugins
 
 # Note: Avoid importing heavy packages at the top to keep CLI startup fast
 
@@ -135,7 +134,6 @@ app.add_typer(invoke_app, name="invoke")
 app.add_typer(add_app, name="add")
 app.add_typer(list_app, name="list")
 app.add_typer(delete_app, name="delete")
-load_cli_plugins(app)
 
 
 if __name__ == "__main__":
