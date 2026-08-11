@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   test:
-    name: Release tests (Python ${{ matrix.python-version }})
+    name: Security tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -52,11 +52,7 @@ jobs:
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ".[identity-runtime]" \
-            -e packages/agentkit-harness-sidecar-integration \
-            pytest \
-            "setuptools>=77" \
-            wheel
+          python -m pip install ".[identity-runtime]" pytest
 
       - name: Run identity and Agent Server security tests
         run: |
@@ -65,14 +61,6 @@ jobs:
             tests/apps/test_agent_server_identity_integration.py \
             tests/apps/test_agent_server_invoke.py \
             tests/apps/test_agent_server_loader.py
-
-      - name: Run Harness Sidecar integration tests
-        run: |
-          python -m pytest -q \
-            packages/agentkit-harness-sidecar-integration/tests \
-            tests/test_optional_sidecar_packaging.py \
-            tests/toolkit/cli/test_plugin_loader.py \
-            tests/toolkit/test_harness_extension_hooks.py
 
   publish:
     name: Build and publish
@@ -165,17 +153,13 @@ jobs:
           PY
 
       - name: Build release artifacts
-        run: |
-          python -m build --outdir dist/sdk
-          python -m build \
-            --outdir dist/integration \
-            packages/agentkit-harness-sidecar-integration
+        run: python -m build --outdir dist
 
       - name: Verify artifacts
         shell: bash
         run: |
           set -euo pipefail
-          python -m twine check dist/sdk/* dist/integration/*
+          python -m twine check dist/*
           python - <<'PY'
           from __future__ import annotations
 
@@ -185,17 +169,9 @@ jobs:
           from pathlib import Path
 
           expected = "${{ steps.version.outputs.version }}"
-          integration_version = "0.1.0"
-          sdk_dist = Path("dist/sdk")
-          integration_dist = Path("dist/integration")
-          wheel = next(sdk_dist.glob("agentkit_sdk_python-*.whl"))
-          sdist = next(sdk_dist.glob("agentkit_sdk_python-*.tar.gz"))
-          integration_wheel = next(
-              integration_dist.glob("agentkit_harness_sidecar_integration-*.whl")
-          )
-          integration_sdist = next(
-              integration_dist.glob("agentkit_harness_sidecar_integration-*.tar.gz")
-          )
+          dist = Path("dist")
+          wheel = next(dist.glob("agentkit_sdk_python-*.whl"))
+          sdist = next(dist.glob("agentkit_sdk_python-*.tar.gz"))
 
           with zipfile.ZipFile(wheel) as archive:
               names = archive.namelist()
@@ -205,16 +181,6 @@ jobs:
               )
               metadata = archive.read(metadata_name).decode()
 
-          with zipfile.ZipFile(integration_wheel) as archive:
-              integration_names = archive.namelist()
-              integration_metadata_name = next(
-                  name for name in integration_names
-                  if name.endswith(".dist-info/METADATA")
-              )
-              integration_metadata = archive.read(
-                  integration_metadata_name
-              ).decode()
-
           with tarfile.open(sdist) as archive:
               root = archive.getnames()[0].split("/", 1)[0]
               pyproject = archive.extractfile(f"{root}/pyproject.toml").read().decode()
@@ -222,44 +188,11 @@ jobs:
                   archive.extractfile(f"{root}/agentkit/version.py").read().decode()
               )
 
-          with tarfile.open(integration_sdist) as archive:
-              integration_root = archive.getnames()[0].split("/", 1)[0]
-              integration_pyproject = archive.extractfile(
-                  f"{integration_root}/pyproject.toml"
-              ).read().decode()
-
-          normalized_sdk_metadata = metadata.lower().replace("_", "-")
-          normalized_integration_metadata = (
-              integration_metadata.lower().replace("_", "-")
-          )
-          module_prefix = "agentkit/extensions/harness_sidecar/"
-
           checks = {
               "wheel metadata": f"Version: {expected}" in metadata,
               "wheel version.py": f'VERSION = "{expected}"' in version_py,
               "sdist pyproject": f'version = "{expected}"' in pyproject,
               "sdist version.py": f'VERSION = "{expected}"' in sdist_version_py,
-              "SDK excludes optional integration modules": not any(
-                  name.startswith(module_prefix) for name in names
-              ),
-              "SDK declares the Sidecar extra": (
-                  "provides-extra: harness-sidecar" in normalized_sdk_metadata
-                  and "agentkit-harness-sidecar-integration" in normalized_sdk_metadata
-              ),
-              "integration wheel version": (
-                  f"version: {integration_version}"
-                  in normalized_integration_metadata
-              ),
-              "integration depends on SDK 0.8.2": (
-                  "agentkit-sdk-python<0.9.0,>=0.8.2"
-                  in normalized_integration_metadata
-              ),
-              "integration wheel contains public modules": any(
-                  name.startswith(module_prefix) for name in integration_names
-              ),
-              "integration sdist version": (
-                  f'version = "{integration_version}"' in integration_pyproject
-              ),
           }
           failed = [name for name, ok in checks.items() if not ok]
           if failed:
@@ -279,79 +212,29 @@ jobs:
           import venv
           from pathlib import Path
 
-          base_smoke = Path("/tmp/agentkit-base-wheel-smoke")
-          sidecar_smoke = Path("/tmp/agentkit-sidecar-wheel-smoke")
-          venv.EnvBuilder(with_pip=True, clear=True).create(base_smoke)
-          venv.EnvBuilder(with_pip=True, clear=True).create(sidecar_smoke)
-          base_python = base_smoke / "bin" / "python"
-          sidecar_python = sidecar_smoke / "bin" / "python"
-          sdk_dist = Path("dist/sdk")
-          integration_dist = Path("dist/integration")
-          wheel = next(sdk_dist.glob("agentkit_sdk_python-*.whl"))
-
+          smoke = Path("/tmp/agentkit-wheel-smoke")
+          venv.EnvBuilder(with_pip=True, clear=True).create(smoke)
+          python = smoke / "bin" / "python"
+          wheel = next(Path("dist").glob("agentkit_sdk_python-*.whl"))
           subprocess.check_call(
-              [
-                  str(base_python),
-                  "-m",
-                  "pip",
-                  "install",
-                  f"{wheel}[identity-runtime]",
-              ]
+              [str(python), "-m", "pip", "install", f"{wheel}[identity-runtime]"]
           )
           subprocess.check_call(
               [
-                  str(base_python),
-                  "-I",
-                  "-c",
-                  (
-                      "import importlib.util; "
-                      "from agentkit.identity import IdentityRuntimeConfig, "
-                      "RuntimeIdentity; "
-                      "from agentkit.apps import AgentkitAgentServerApp; "
-                      "assert importlib.util.find_spec("
-                      "'agentkit.extensions.harness_sidecar') is None"
-                  ),
-              ]
-          )
-
-          subprocess.check_call(
-              [
-                  str(sidecar_python),
-                  "-m",
-                  "pip",
-                  "install",
-                  "--find-links",
-                  str(integration_dist),
-                  f"{wheel}[identity-runtime,harness-sidecar]",
-              ]
-          )
-          subprocess.check_call(
-              [
-                  str(sidecar_python),
+                  str(python),
                   "-I",
                   "-c",
                   (
                       "from agentkit.identity import IdentityRuntimeConfig, "
                       "RuntimeIdentity; "
-                      "from agentkit.apps import AgentkitAgentServerApp; "
-                      "from agentkit.extensions.harness_sidecar import "
-                      "HarnessSidecarConfig, resolve_harness_sidecar_selection"
+                      "from agentkit.apps import AgentkitAgentServerApp"
                   ),
               ]
           )
           PY
 
-      - name: Publish Harness Sidecar integration to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.PYPI_SIDECAR_INTEGRATION_API_TOKEN }}
-          packages-dir: dist/integration
-          skip-existing: true
-
-      - name: Publish AgentKit SDK to PyPI
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
-          packages-dir: dist/sdk
