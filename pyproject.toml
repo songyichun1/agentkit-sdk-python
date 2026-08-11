@@ -60,6 +60,7 @@ agentkit = "agentkit.toolkit.cli.cli:app"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agentkit", "agentkit.*", "agentkit_identity", "agentkit_identity.*"]
+exclude = ["packages", "packages.*"]
 
 [tool.setuptools]
 include-package-data = true
@@ -87,6 +88,16 @@ langgraph = ["langgraph"]
 strands = ["strands-agents"]
 agentcore = ["bedrock-agentcore"]
 frameworks = ["langchain", "langgraph", "strands-agents", "bedrock-agentcore"]
+harness-sidecar = [
+    "agentkit-harness-sidecar-integration>=0.1.0,<0.2.0",
+]
+
+[tool.uv.workspace]
+members = ["packages/agentkit-harness-sidecar-integration"]
+
+[tool.uv.sources]
+agentkit-harness-sidecar-integration = { workspace = true }
+agentkit-sdk-python = { workspace = true }
 
 [tool.ruff.lint]
 
