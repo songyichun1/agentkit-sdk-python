@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import uvicorn
+from a2a.types import AgentCard
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from google.adk.a2a.utils.agent_to_a2a import to_a2a
@@ -246,6 +247,12 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         app: App | None = None,
         allow_origins: list[str] | None = None,
         allow_origin_regex: str | list[str] | None = None,
+        a2a_host: str = "localhost",
+        a2a_port: int = 8000,
+        a2a_protocol: str = "http",
+        agent_card: AgentCard | str | None = None,
+        push_config_store: Any | None = None,
+        task_store: Any | None = None,
         enable_auth: bool = False,
         identity: IdentityRuntimeConfig | RuntimeIdentity | None = None,
         identity_health_routes: tuple[str, ...] = (),
@@ -291,7 +298,16 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             artifact_service=_artifact_service,
             credential_service=_credential_service,
         )
-        to_a2a_kwargs: dict[str, Any] = {"agent": root_agent, "runner": runner}
+        to_a2a_kwargs: dict[str, Any] = {
+            "agent": root_agent,
+            "runner": runner,
+            "host": a2a_host,
+            "port": a2a_port,
+            "protocol": a2a_protocol,
+            "agent_card": agent_card,
+            "push_config_store": push_config_store,
+            "task_store": task_store,
+        }
         if enable_auth:
             to_a2a_kwargs["agent_executor_factory"] = (
                 build_a2a_inbound_auth_executor_factory(
