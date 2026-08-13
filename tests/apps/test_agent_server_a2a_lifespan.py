@@ -19,11 +19,14 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from google.adk.agents.base_agent import BaseAgent
 from starlette.testclient import TestClient
+from starlette.applications import Starlette
 from veadk.memory.short_term_memory import ShortTermMemory
 
+import agentkit.apps.agent_server_app.agent_server_app as agent_server_module
 from agentkit.apps.agent_server_app.agent_server_app import (
     AgentkitAgentServerApp,
     _run_a2a_app_lifespan,
@@ -111,3 +114,88 @@ def test_agent_server_app_startup_initializes_mounted_a2a_agent_card_route():
 
     assert response.status_code == 200
     assert response.json()["name"] == "agent_server_a2a_test_agent"
+
+
+def test_agent_server_app_configures_a2a_agent_card_url_parts():
+    server = AgentkitAgentServerApp(
+        agent=BaseAgent(
+            name="agent_server_a2a_url_parts_agent",
+            description="Agent used to verify mounted A2A card URL parts.",
+        ),
+        a2a_host="agents.example.com",
+        a2a_port=443,
+        a2a_protocol="https",
+    )
+
+    with TestClient(server.app) as client:
+        response = client.get(AGENT_CARD_WELL_KNOWN_PATH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "agent_server_a2a_url_parts_agent"
+    assert body["url"] == "https://agents.example.com:443"
+
+
+def test_agent_server_app_accepts_custom_a2a_agent_card():
+    server = AgentkitAgentServerApp(
+        agent=BaseAgent(
+            name="agent_server_custom_card_agent",
+            description="Generated metadata should be replaced by custom card.",
+        ),
+        agent_card=AgentCard(
+            name="custom-card-agent",
+            description="Custom card description.",
+            url="https://custom.example.com/a2a",
+            version="1.2.3",
+            capabilities=AgentCapabilities(streaming=True),
+            skills=[
+                AgentSkill(
+                    id="custom-skill",
+                    name="Custom skill",
+                    description="A skill supplied by the custom card.",
+                    tags=["custom"],
+                )
+            ],
+            defaultInputModes=["text/plain"],
+            defaultOutputModes=["text/plain"],
+        ),
+    )
+
+    with TestClient(server.app) as client:
+        response = client.get(AGENT_CARD_WELL_KNOWN_PATH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "custom-card-agent"
+    assert body["url"] == "https://custom.example.com/a2a"
+    assert body["version"] == "1.2.3"
+
+
+def test_agent_server_app_forwards_supported_a2a_kwargs(monkeypatch):
+    captured: dict = {}
+
+    def fake_to_a2a(**kwargs):
+        captured.update(kwargs)
+        return Starlette()
+
+    push_config_store = object()
+    task_store = object()
+    monkeypatch.setattr(agent_server_module, "to_a2a", fake_to_a2a)
+
+    AgentkitAgentServerApp(
+        agent=BaseAgent(name="agent_server_a2a_kwargs_agent"),
+        a2a_host="agents.example.com",
+        a2a_port=443,
+        a2a_protocol="https",
+        agent_card="agent-card.json",
+        push_config_store=push_config_store,
+        task_store=task_store,
+    )
+
+    assert captured["host"] == "agents.example.com"
+    assert captured["port"] == 443
+    assert captured["protocol"] == "https"
+    assert captured["agent_card"] == "agent-card.json"
+    assert captured["push_config_store"] is push_config_store
+    assert captured["task_store"] is task_store
+    assert "runner" in captured
