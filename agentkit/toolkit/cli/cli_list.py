@@ -51,6 +51,33 @@ def _is_harness_runtime(runtime: rt.AgentKitRuntimesForListRuntimes) -> bool:
 _HARNESS_APP = "harness"
 
 
+def fetch_all_inbound_auth_configs(client, *, page_size: int):
+    """Fetch inbound auth configs using the id service's page-number protocol."""
+    from agentkit.sdk.identity import types as it
+
+    configs = []
+    page_number = 1
+    while True:
+        response = client.list_inbound_auth_configs(
+            it.ListInboundAuthConfigsRequest(
+                page_number=page_number,
+                page_size=page_size,
+            )
+        )
+        items = response.inbound_auth_configs or []
+        configs.extend(items)
+
+        total_count = response.total_count
+        if page_number * page_size >= total_count:
+            break
+        if not items or len(items) < page_size:
+            break
+
+        page_number += 1
+
+    return configs
+
+
 def _user_id_from_token(token: str) -> Optional[str]:
     """Return the OIDC ``sub`` claim from a JWT bearer token, else ``None``.
 
@@ -240,9 +267,7 @@ def list_sessions_command(
     output: str = typer.Option(
         "table", "--output", help="Output format: table|json|yaml"
     ),
-    quiet: bool = typer.Option(
-        False, "--quiet", "-q", help="Print only session ids"
-    ),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Print only session ids"),
     no_color: bool = typer.Option(
         False, "--no-color", "-nc", help="Disable colored output for tables/panels"
     ),
@@ -304,7 +329,9 @@ def list_sessions_command(
     if output.lower() == "yaml":
         import yaml
 
-        local_console.print(yaml.safe_dump(sessions, sort_keys=False, allow_unicode=True))
+        local_console.print(
+            yaml.safe_dump(sessions, sort_keys=False, allow_unicode=True)
+        )
         return
 
     table = Table(
@@ -343,7 +370,7 @@ def list_credentials_command(
         "table", "--output", help="Output format: table|json|yaml"
     ),
     quiet: bool = typer.Option(
-        False, "--quiet", "-q", help="Print only credential names"
+        False, "--quiet", "-q", help="Print only InstanceId values"
     ),
     no_color: bool = typer.Option(
         False, "--no-color", "-nc", help="Disable colored output for tables/panels"
@@ -353,34 +380,19 @@ def list_credentials_command(
     ),
 ):
     """List credentials (inbound auth configs) visible to the credentials."""
-    from agentkit.toolkit.cli.utils import PaginationHelper, OutputFormatter
+    from agentkit.toolkit.cli.utils import OutputFormatter
     from agentkit.sdk.identity.client import AgentkitIdentityClient
-    from agentkit.sdk.identity import types as it
 
     local_console = console if not no_color else Console(no_color=True)
 
     client = AgentkitIdentityClient(region=(region or "").strip())
 
-    def build_request(next_token_val):
-        return it.ListInboundAuthConfigsRequest(
-            max_results=limit,
-            next_token=next_token_val,
-        )
-
     with local_console.status("[cyan]Fetching credentials...[/cyan]", spinner="dots"):
-        configs, _, _ = PaginationHelper.fetch_all_pages(
-            request_func=client.list_inbound_auth_configs,
-            request_builder=build_request,
-            max_results=limit,
-            next_token=None,
-            fetch_all=True,
-            max_batches=None,
-            sleep_ms=0,
-        )
+        configs = fetch_all_inbound_auth_configs(client, page_size=limit)
 
     if quiet:
         for c in configs:
-            local_console.print(c.config_name or "")
+            local_console.print(c.instance_id or "")
         return
 
     if output.lower() == "json":
@@ -391,7 +403,7 @@ def list_credentials_command(
         return
 
     columns = [
-        ("ConfigName", "Name", "cyan"),
+        ("InstanceId", "InstanceId", "cyan"),
         ("AuthType", "AuthType", "white"),
         ("InboundAuthConfigId", "InboundAuthConfigId", "green"),
         ("CreatedAt", "CreatedAt", "magenta"),
