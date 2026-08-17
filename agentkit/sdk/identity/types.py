@@ -15,9 +15,8 @@
 # Request/response models for the InboundAuthConfig APIs.
 #
 # ``CreateInboundAuthConfig`` mirrors the published OpenAPI definition
-# (Version 2025-10-30). ``ListInboundAuthConfigs`` and
-# ``DeleteInboundAuthConfig`` follow the standard Volcengine list/delete
-# conventions; adjust the field names here if the published specs differ.
+# (Version 2025-10-30). ``ListInboundAuthConfigs`` uses the id service's
+# PageNumber/PageSize pagination contract.
 
 from __future__ import annotations
 
@@ -32,15 +31,20 @@ class IdentityBaseModel(BaseModel):
 
 
 # Data Types
-class ApiKeyMetadata(IdentityBaseModel):
-    location: Optional[str] = Field(default=None, alias="Location")
+class ApiKeyInfo(IdentityBaseModel):
+    location: str = Field(..., alias="Location")
     parameter_name: Optional[str] = Field(default=None, alias="ParameterName")
+    prefix: Optional[str] = Field(default=None, alias="Prefix")
+
+
+# Backward-compatible name used by earlier SDK code.
+ApiKeyMetadata = ApiKeyInfo
 
 
 class ApiKeyAuthConfig(IdentityBaseModel):
     api_key_name: str = Field(..., alias="ApiKeyName")
     api_key: Optional[str] = Field(default=None, alias="ApiKey")
-    api_key_metadata: Optional[list[ApiKeyMetadata]] = Field(
+    api_key_metadata: Optional[list[ApiKeyInfo]] = Field(
         default=None, alias="ApiKeyMetadata"
     )
     expiry_timestamp: Optional[int] = Field(default=None, alias="ExpiryTimestamp")
@@ -54,72 +58,62 @@ class JwtAuthConfig(IdentityBaseModel):
     allowed_clients: Optional[list[str]] = Field(default=None, alias="AllowedClients")
 
 
+class InboundAuthConfig(IdentityBaseModel):
+    trn: str = Field(..., alias="Trn")
+    inbound_auth_config_id: str = Field(..., alias="InboundAuthConfigId")
+    config_name: str = Field(..., alias="ConfigName")
+    description: Optional[str] = Field(default=None, alias="Description")
+    auth_type: str = Field(..., alias="AuthType")
+    jwt_auth_config: Optional[JwtAuthConfig] = Field(
+        default=None, alias="JwtAuthConfig"
+    )
+    api_key_auth_configs: Optional[list[ApiKeyAuthConfig]] = Field(
+        default=None, alias="ApiKeyAuthConfigs"
+    )
+    created_at: str = Field(..., alias="CreatedAt")
+    updated_at: str = Field(..., alias="UpdatedAt")
+    instance_id: Optional[str] = Field(default=None, alias="InstanceId")
+
+
 # CreateInboundAuthConfig - Request
 class CreateInboundAuthConfigRequest(IdentityBaseModel):
+    config_name: Optional[str] = Field(default=None, alias="ConfigName")
+    description: Optional[str] = Field(default=None, alias="Description")
     auth_type: str = Field(..., alias="AuthType")
+    instance_id: Optional[str] = Field(default=None, alias="InstanceId")
     api_key_auth_configs: Optional[list[ApiKeyAuthConfig]] = Field(
         default=None, alias="ApiKeyAuthConfigs"
     )
     jwt_auth_config: Optional[JwtAuthConfig] = Field(
         default=None, alias="JwtAuthConfig"
     )
-    config_name: Optional[str] = Field(default=None, alias="ConfigName")
-    description: Optional[str] = Field(default=None, alias="Description")
-    instance_id: Optional[str] = Field(default=None, alias="InstanceId")
 
 
 # CreateInboundAuthConfig - Response
-class CreateInboundAuthConfigResponse(IdentityBaseModel):
-    inbound_auth_config_id: Optional[str] = Field(
-        default=None, alias="InboundAuthConfigId"
-    )
-    trn: Optional[str] = Field(default=None, alias="Trn")
-    config_name: Optional[str] = Field(default=None, alias="ConfigName")
-    description: Optional[str] = Field(default=None, alias="Description")
-    auth_type: Optional[str] = Field(default=None, alias="AuthType")
-    jwt_auth_config: Optional[JwtAuthConfig] = Field(
-        default=None, alias="JwtAuthConfig"
-    )
-    api_key_auth_configs: Optional[list[ApiKeyAuthConfig]] = Field(
-        default=None, alias="ApiKeyAuthConfigs"
-    )
-    instance_id: Optional[str] = Field(default=None, alias="InstanceId")
-    created_at: Optional[str] = Field(default=None, alias="CreatedAt")
-    updated_at: Optional[str] = Field(default=None, alias="UpdatedAt")
+class CreateInboundAuthConfigResponse(InboundAuthConfig):
+    pass
 
 
 # ListInboundAuthConfigs - Request
 class ListInboundAuthConfigsRequest(IdentityBaseModel):
+    page_number: int = Field(..., alias="PageNumber")
+    page_size: int = Field(..., alias="PageSize")
+    auth_type: Optional[str] = Field(default=None, alias="AuthType")
     instance_id: Optional[str] = Field(default=None, alias="InstanceId")
-    max_results: Optional[int] = Field(default=None, alias="MaxResults")
-    next_token: Optional[str] = Field(default=None, alias="NextToken")
 
 
 # ListInboundAuthConfigs - Response
-class InboundAuthConfigForList(IdentityBaseModel):
-    inbound_auth_config_id: Optional[str] = Field(
-        default=None, alias="InboundAuthConfigId"
-    )
-    trn: Optional[str] = Field(default=None, alias="Trn")
-    config_name: Optional[str] = Field(default=None, alias="ConfigName")
-    description: Optional[str] = Field(default=None, alias="Description")
-    auth_type: Optional[str] = Field(default=None, alias="AuthType")
-    jwt_auth_config: Optional[JwtAuthConfig] = Field(
-        default=None, alias="JwtAuthConfig"
-    )
-    api_key_auth_configs: Optional[list[ApiKeyAuthConfig]] = Field(
-        default=None, alias="ApiKeyAuthConfigs"
-    )
-    instance_id: Optional[str] = Field(default=None, alias="InstanceId")
-    created_at: Optional[str] = Field(default=None, alias="CreatedAt")
-    updated_at: Optional[str] = Field(default=None, alias="UpdatedAt")
+class InboundAuthConfigForList(InboundAuthConfig):
+    pass
 
 
 class ListInboundAuthConfigsResponse(IdentityBaseModel):
+    page_number: int = Field(..., alias="PageNumber")
+    page_size: int = Field(..., alias="PageSize")
+    total_count: int = Field(..., alias="TotalCount")
     inbound_auth_configs: Optional[list[InboundAuthConfigForList]] = Field(
         default=None, alias="InboundAuthConfigs"
     )
-    next_token: Optional[str] = Field(default=None, alias="NextToken")
 
 
 # DeleteInboundAuthConfig - Request
@@ -129,6 +123,4 @@ class DeleteInboundAuthConfigRequest(IdentityBaseModel):
 
 # DeleteInboundAuthConfig - Response
 class DeleteInboundAuthConfigResponse(IdentityBaseModel):
-    inbound_auth_config_id: Optional[str] = Field(
-        default=None, alias="InboundAuthConfigId"
-    )
+    pass

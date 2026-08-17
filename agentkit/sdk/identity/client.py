@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from typing import Dict
 
-from agentkit.client import BaseAgentkitClient
+from agentkit.client.base_service_client import BaseServiceClient
+from agentkit.platform.configuration import VolcConfiguration
 from agentkit.sdk.identity.types import (
     CreateInboundAuthConfigRequest,
     CreateInboundAuthConfigResponse,
@@ -27,7 +28,7 @@ from agentkit.sdk.identity.types import (
 )
 
 
-class AgentkitIdentityClient(BaseAgentkitClient):
+class AgentkitIdentityClient(BaseServiceClient):
     """AgentKit Identity / Inbound Auth Config Service."""
 
     API_ACTIONS: Dict[str, str] = {
@@ -44,11 +45,16 @@ class AgentkitIdentityClient(BaseAgentkitClient):
         session_token: str = "",
     ) -> None:
         super().__init__(
+            service="agent_identity",
             access_key=access_key,
             secret_key=secret_key,
             region=region,
             session_token=session_token,
             service_name="identity",
+            platform_config=VolcConfiguration(
+                region=region or None,
+                provider="volcengine",
+            ),
         )
 
     def create_inbound_auth_config(

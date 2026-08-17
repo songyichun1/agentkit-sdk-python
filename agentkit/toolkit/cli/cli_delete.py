@@ -46,27 +46,12 @@ def delete_credential_command(
     ),
 ):
     """Delete a credential (inbound auth config) by name."""
-    from agentkit.toolkit.cli.utils import PaginationHelper
+    from agentkit.toolkit.cli.cli_list import fetch_all_inbound_auth_configs
     from agentkit.sdk.identity.client import AgentkitIdentityClient
     from agentkit.sdk.identity import types as it
 
     client = AgentkitIdentityClient(region=(region or "").strip())
-
-    def build_request(next_token_val):
-        return it.ListInboundAuthConfigsRequest(
-            max_results=50,
-            next_token=next_token_val,
-        )
-
-    configs, _, _ = PaginationHelper.fetch_all_pages(
-        request_func=client.list_inbound_auth_configs,
-        request_builder=build_request,
-        max_results=50,
-        next_token=None,
-        fetch_all=True,
-        max_batches=None,
-        sleep_ms=0,
-    )
+    configs = fetch_all_inbound_auth_configs(client, page_size=50)
 
     matches = [c for c in configs if c.config_name == name]
     if not matches:
