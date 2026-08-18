@@ -55,6 +55,7 @@ _ALIASES = {
     "region": ("region",),
     "transport": ("transport",),
     "scope": ("scope",),
+    "sts_host": ("sts_host", "stsHost"),
 }
 
 
@@ -175,7 +176,7 @@ def resolve_profile(address: str, *, timeout: float = _TIMEOUT, harden_ssl: bool
     return AuthProfile(
         name=name, issuer=str(issuer), client_id=str(client_id), role_trn=str(role_trn),
         provider_trn=provider_trn, region=region, scope=scope, transport=transport,
-        address=base,
+        address=base, sts_host=disc.get("sts_host"),
     ).validate()
 
 

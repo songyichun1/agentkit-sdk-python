@@ -304,6 +304,7 @@ class AuthSession:
             self.profile.role_trn,
             self.profile.provider_trn,
             duration_seconds=self._duration,
+            host=self.profile.sts_host,
         )
         self._sts = StsCredentials(
             access_key=assumed.access_key_id,

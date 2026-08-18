@@ -73,9 +73,10 @@ class CliAccessCoords:
     client_id: str
     role_trn: str
     provider_trn: str
+    sts_host: str | None = None  # provider STS endpoint (None = Volcengine default)
 
     def discovery_doc(self) -> dict:
-        return {
+        doc = {
             "issuer": self.issuer,
             "client_id": self.client_id,
             "role_trn": self.role_trn,
@@ -84,6 +85,9 @@ class CliAccessCoords:
             "transport": "sts",
             "scope": "openid profile email offline_access",
         }
+        if self.sts_host:
+            doc["sts_host"] = self.sts_host
+        return doc
 
 
 def tos_public_host(region: str) -> str:
@@ -95,6 +99,18 @@ def tos_public_host(region: str) -> str:
     from agentkit.platform.configuration import VolcConfiguration
 
     return VolcConfiguration(region=region).get_service_endpoint("tos").host
+
+
+def sts_public_host(region: str) -> str:
+    """Provider-aware STS endpoint for *region*, from the platform service registry.
+
+    Published in the discovery doc as ``sts_host`` so the end-user login exchanges
+    the id_token against the pool's own cloud (BytePlus pools must not call the
+    Volcengine STS).
+    """
+    from agentkit.platform.configuration import VolcConfiguration
+
+    return VolcConfiguration(region=region).get_service_endpoint("sts").host
 
 
 def _issuer(user_pool_uid: str, region: str) -> str:
@@ -284,6 +300,7 @@ def provision_cli_access(
     return CliAccessCoords(
         account_id=acct, region=region, user_pool_uid=user_pool_uid, issuer=issuer,
         client_id=client_id, role_trn=f"trn:iam::{acct}:role/{role_name}", provider_trn=provider_trn,
+        sts_host=sts_public_host(region),
     )
 
 

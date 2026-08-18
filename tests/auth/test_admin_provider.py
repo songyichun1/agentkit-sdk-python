@@ -221,3 +221,71 @@ class TestTosPublicHost:
 
         isolated_env.setenv("CLOUD_PROVIDER", "byteplus")
         assert tos_public_host("ap-southeast-1") == "tos-ap-southeast-1.bytepluses.com"
+
+
+class TestStsHostPlumbing:
+    """The discovery doc carries the provider's STS endpoint (`sts_host`) and the
+    end-user login honors it — a BytePlus pool must not call the Volcengine STS."""
+
+    def test_sts_public_host_by_provider(self, isolated_env):
+        from agentkit.auth.admin import sts_public_host
+
+        assert sts_public_host("cn-beijing") == "sts.volcengineapi.com"
+        isolated_env.setenv("CLOUD_PROVIDER", "byteplus")
+        assert sts_public_host("ap-southeast-1") == "sts.ap-southeast-1.byteplusapi.com"
+
+    def test_discovery_doc_carries_sts_host(self):
+        from agentkit.auth.admin import CliAccessCoords
+
+        kwargs = dict(
+            account_id="1", region="ap-southeast-1", user_pool_uid="u", issuer="https://i",
+            client_id="c", role_trn="trn:iam::1:role/r", provider_trn="trn:iam::1:oidc-provider/p",
+        )
+        doc = CliAccessCoords(**kwargs, sts_host="sts.ap-southeast-1.byteplusapi.com").discovery_doc()
+        assert doc["sts_host"] == "sts.ap-southeast-1.byteplusapi.com"
+        # Back-compat: no sts_host -> field omitted, older docs keep their shape.
+        assert "sts_host" not in CliAccessCoords(**kwargs).discovery_doc()
+
+    def test_resolve_profile_parses_sts_host(self, isolated_env, tmp_path):
+        import json
+
+        from agentkit.auth.resolve import resolve_profile
+
+        doc = {
+            "issuer": "https://userpool-u.userpool.auth.id.ap-southeast-1.example",
+            "client_id": "c",
+            "role_trn": "trn:iam::1:role/r",
+            "provider_trn": "trn:iam::1:oidc-provider/p",
+            "region": "ap-southeast-1",
+            "sts_host": "sts.ap-southeast-1.byteplusapi.com",
+        }
+        path = tmp_path / "agentkit-cli.json"
+        path.write_text(json.dumps(doc))
+        prof = resolve_profile(str(path), harden_ssl=False)
+        assert prof.sts_host == "sts.ap-southeast-1.byteplusapi.com"
+
+        path.write_text(json.dumps({k: v for k, v in doc.items() if k != "sts_host"}))
+        assert resolve_profile(str(path), harden_ssl=False).sts_host is None
+
+    def test_assume_role_honors_host(self, monkeypatch):
+        import io
+        import json
+
+        from agentkit.auth import sts as sts_mod
+
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append(req.full_url)
+            return io.BytesIO(json.dumps({"Result": {"Credentials": {
+                "AccessKeyId": "AK", "SecretAccessKey": "SK", "SessionToken": "TOK",
+                "ExpiredTime": "2026-08-18T00:00:00+00:00",
+            }}}).encode())
+
+        monkeypatch.setattr(sts_mod.urllib.request, "urlopen", fake_urlopen)
+
+        sts_mod.assume_role_with_oidc("tok", "trn:iam::1:role/r", host="sts.ap-southeast-1.byteplusapi.com")
+        assert seen[-1].startswith("https://sts.ap-southeast-1.byteplusapi.com/")
+        # Default (older discovery docs without sts_host) is unchanged.
+        sts_mod.assume_role_with_oidc("tok", "trn:iam::1:role/r")
+        assert seen[-1].startswith("https://sts.volcengineapi.com/")

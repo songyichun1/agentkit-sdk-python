@@ -80,13 +80,14 @@ def login(
     refresh_token = token.get("refresh_token")
 
     assumed = assume_role_with_oidc(
-        id_token, prof.role_trn, prof.provider_trn, duration_seconds=duration_seconds
+        id_token, prof.role_trn, prof.provider_trn, duration_seconds=duration_seconds,
+        host=prof.sts_host,
     )
     account = None
     try:
         ident = get_caller_identity(
             assumed.access_key_id, assumed.secret_access_key, assumed.session_token,
-            region=prof.region,
+            region=prof.region, host=prof.sts_host,
         )
         account = ident.get("AccountId")
     except Exception:
@@ -154,7 +155,8 @@ def whoami(profile: str | None = None, *, harden_ssl: bool = True) -> dict:
         raise AuthError("not logged in.", hint="run `agentkit login` first.")
     creds = session.credentials()
     ident = get_caller_identity(
-        creds.access_key, creds.secret_key, creds.session_token, region=session.profile.region
+        creds.access_key, creds.secret_key, creds.session_token,
+        region=session.profile.region, host=session.profile.sts_host,
     )
     ident["_profile"] = session.profile.name
     ident["_expires_at"] = creds.expires_at.isoformat() if creds.expires_at else None

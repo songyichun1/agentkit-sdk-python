@@ -73,13 +73,16 @@ def assume_role_with_oidc(
     role_session_name: str = "agentkit-cli",
     duration_seconds: int = 3600,
     timeout: float = _TIMEOUT,
+    host: str | None = None,
 ) -> AssumedRole:
     """Exchange an OIDC ``id_token`` for temporary STS credentials.
 
-    Anonymous call — the token is the credential. ``host`` MUST be
-    ``sts.volcengineapi.com``; the token is too long for the query string so it
-    travels in the POST body.
+    Anonymous call — the token is the credential; it is too long for the query
+    string so it travels in the POST body. ``host`` is the STS endpoint from the
+    login profile (the discovery doc's ``sts_host``, so BytePlus pools use the
+    BytePlus STS); it defaults to the Volcengine endpoint for older docs.
     """
+    sts_host = host or STS_HOST
     params = {
         "RoleTrn": role_trn,
         "OIDCToken": id_token,
@@ -89,7 +92,7 @@ def assume_role_with_oidc(
     if provider_trn:
         params["OIDCProviderTrn"] = provider_trn
     body = urllib.parse.urlencode(params).encode("utf-8")
-    url = f"https://{STS_HOST}/?Action=AssumeRoleWithOIDC&Version={STS_VERSION}"
+    url = f"https://{sts_host}/?Action=AssumeRoleWithOIDC&Version={STS_VERSION}"
     req = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST"
     )
@@ -103,7 +106,7 @@ def assume_role_with_oidc(
             "id_token's aud is in the provider's client-id allow-list.",
         ) from exc
     except urllib.error.URLError as exc:
-        raise NetworkError(f"cannot reach STS endpoint ({STS_HOST}): {exc.reason}") from exc
+        raise NetworkError(f"cannot reach STS endpoint ({sts_host}): {exc.reason}") from exc
 
     try:
         creds = json.loads(raw)["Result"]["Credentials"]
@@ -121,15 +124,17 @@ def get_caller_identity(
     *,
     region: str = "cn-beijing",
     timeout: float = _TIMEOUT,
+    host: str | None = None,
 ) -> dict:
     """Return the verified identity (``AccountId`` / ``IdentityType`` / ``UserId``)."""
+    sts_host = host or STS_HOST
     query = {"Action": "GetCallerIdentity", "Version": STS_VERSION}
     headers = sign_headers(
-        "POST", STS_HOST, query, b"",
+        "POST", sts_host, query, b"",
         access_key=access_key, secret_key=secret_key, service="sts", region=region,
         session_token=session_token,
     )
-    url = f"https://{STS_HOST}/?" + urllib.parse.urlencode(query)
+    url = f"https://{sts_host}/?" + urllib.parse.urlencode(query)
     req = urllib.request.Request(url, data=b"", headers=headers, method="POST")
     try:
         raw = urllib.request.urlopen(req, timeout=timeout).read()
@@ -137,5 +142,5 @@ def get_caller_identity(
         detail = redact(exc.read().decode("utf-8", "replace"))[:200]
         raise SsoError(f"GetCallerIdentity failed: {detail}") from exc
     except urllib.error.URLError as exc:
-        raise NetworkError(f"cannot reach STS endpoint ({STS_HOST}): {exc.reason}") from exc
+        raise NetworkError(f"cannot reach STS endpoint ({sts_host}): {exc.reason}") from exc
     return json.loads(raw).get("Result") or {}
