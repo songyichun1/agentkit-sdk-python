@@ -50,16 +50,46 @@ def _fake_memory_client(monkeypatch):
     monkeypatch.setattr(cli_memory, "AgentkitMemoryClient", _FakeMemoryClient)
 
 
-def test_create_help_describes_provider_type_byteplus_default():
+def test_create_help_points_to_provider_types_for_supported_values():
     from agentkit.toolkit.cli.cli import app
 
     result = runner.invoke(app, ["memory", "create", "--help"])
 
     assert result.exit_code == 0
     assert "--provider-type" in result.output
-    assert "Defaults to MEM0" in result.output
-    assert "byteplus" in result.output
-    assert "MEM0 is not supported" in result.output
+    assert "provider-types" in result.output
+    assert "MEM0 | VIKINGDB_MEMORY" not in result.output
+
+
+def test_provider_types_lists_mem0_for_volcengine(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+
+    monkeypatch.setenv("AGENTKIT_CLOUD_PROVIDER", "volcengine")
+
+    result = runner.invoke(app, ["memory", "provider-types"])
+
+    assert result.exit_code == 0
+    assert "Cloud provider: volcengine" in result.output
+    assert "MEM0" in result.output
+    assert "mem0" in result.output
+    assert "VIKINGDB_MEMORY" in result.output
+
+
+def test_provider_types_hides_mem0_row_for_byteplus(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+
+    monkeypatch.setenv("AGENTKIT_CLOUD_PROVIDER", "byteplus")
+
+    result = runner.invoke(app, ["memory", "provider-types"])
+
+    assert result.exit_code == 0
+    assert "Cloud provider: byteplus" in result.output
+    assert "VIKINGDB_MEMORY" in result.output
+    assert "MEM0 is not" in result.output
+    assert "supported on BytePlus" in result.output
+    assert not any(
+        "MEM0" in line and "mem0" in line for line in result.output.splitlines()
+    )
 
 
 def test_create_defaults_provider_type_to_mem0_for_volcengine(monkeypatch):

@@ -57,8 +57,8 @@ PROVIDER_TYPE_ALIASES = {
     "VIKINGDB_MEMORY": "VIKINGDB_MEMORY",
 }
 CREATE_PROVIDER_TYPE_HELP = (
-    "Provider type: MEM0 | VIKINGDB_MEMORY. Defaults to MEM0; when cloud provider "
-    "is byteplus, defaults to VIKINGDB_MEMORY and MEM0 is not supported."
+    "Provider type for create. Defaults depend on the active cloud provider; "
+    "run 'agentkit memory provider-types' to view supported values."
 )
 
 
@@ -467,17 +467,25 @@ def add_command(
 def provider_types_command():
     """List allowed ProviderType values and common aliases."""
     try:
+        cloud_provider = VolcConfiguration().provider
         table = Table(title="Allowed Provider Types")
         table.add_column("Value", style="cyan")
         table.add_column("Aliases", style="magenta")
-        table.add_row("MEM0", "mem0")
+
+        if cloud_provider != CloudProvider.BYTEPLUS:
+            table.add_row("MEM0", "mem0")
         table.add_row("VIKINGDB_MEMORY", "vikingdb, vikingdb_memory, vikingdb-memory")
         console.print(table)
-        console.print(
-            "Default for create is [bold]MEM0[/bold], or "
-            "[bold]VIKINGDB_MEMORY[/bold] when cloud provider is byteplus. "
-            "MEM0 is not supported on BytePlus."
-        )
+        if cloud_provider == CloudProvider.BYTEPLUS:
+            console.print(
+                "Cloud provider: [bold]byteplus[/bold]. Default for create is "
+                "[bold]VIKINGDB_MEMORY[/bold]. MEM0 is not supported on BytePlus."
+            )
+        else:
+            console.print(
+                "Cloud provider: [bold]volcengine[/bold]. Default for create is "
+                "[bold]MEM0[/bold]."
+            )
     except Exception as e:
         console.print(f"[red]Failed to list provider types: {e}[/red]")
         raise typer.Exit(1)
