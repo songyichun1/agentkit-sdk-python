@@ -86,7 +86,21 @@ class CliAccessCoords:
         }
 
 
+def tos_public_host(region: str) -> str:
+    """Provider-aware public host of the TOS static-site endpoint for *region*.
+
+    ``tos-<region>.volces.com`` on Volcengine, ``tos-<region>.bytepluses.com`` on
+    BytePlus — resolved from the platform service registry, not hardcoded here.
+    """
+    from agentkit.platform.configuration import VolcConfiguration
+
+    return VolcConfiguration(region=region).get_service_endpoint("tos").host
+
+
 def _issuer(user_pool_uid: str, region: str) -> str:
+    # NOTE: this is the Volcengine UserPool issuer domain. Whether/where the
+    # UserPool (id) service is exposed on BytePlus is a platform question; the
+    # CreateUserPool call itself fails first on accounts without the service.
     return f"https://userpool-{user_pool_uid}.userpool.auth.id.{region}.volces.com"
 
 
@@ -349,7 +363,7 @@ def sso_setup(
     if custom_domain:
         manual.append(
             f"把自定义域名指向该 bucket:CNAME {custom_domain} -> "
-            f"{bucket}.tos-{region}.volces.com,并配置 https 证书(TOS/CDN)。"
+            f"{bucket}.{tos_public_host(region)},并配置 https 证书(TOS/CDN)。"
         )
     return SsoSetupResult(login_address=url, coords=coords, manual_steps=manual)
 
@@ -371,18 +385,28 @@ def publish_discovery(
     The returned URL is what the end user types: ``agentkit login <url>``.
     """
     try:
-        import os as _os
-
         import tos  # type: ignore
     except Exception as exc:  # pragma: no cover - optional dep
         raise AuthError(
             "publishing needs the `tos` package (`pip install tos`), or host the "
             "discovery doc yourself.",
         ) from exc
-    ak = access_key or _os.getenv("VOLCENGINE_ACCESS_KEY")
-    sk = secret_key or _os.getenv("VOLCENGINE_SECRET_KEY")
-    token = session_token or _os.getenv("VOLCENGINE_SESSION_TOKEN")
-    endpoint = f"tos-{coords.region}.volces.com"
+    from agentkit.platform.configuration import VolcConfiguration
+
+    cfg = VolcConfiguration(
+        region=coords.region, access_key=access_key, secret_key=secret_key,
+        session_token=session_token,
+    )
+    try:
+        creds = cfg.get_service_credentials("tos")
+    except ValueError as exc:
+        raise AuthError(
+            "publishing the discovery doc needs cloud credentials for TOS.",
+            hint=str(exc).split("\n")[0],
+        ) from exc
+    ak, sk = creds.access_key, creds.secret_key
+    token = session_token or creds.session_token
+    endpoint = cfg.get_service_endpoint("tos").host
     client = tos.TosClientV2(ak, sk, endpoint, coords.region, security_token=token)
     try:
         client.create_bucket(bucket, acl=tos.ACLType.ACL_Public_Read)
@@ -453,7 +477,7 @@ def preflight(api: OpenApiClient, *, credential_hosting: bool = True) -> list[di
             checks.append({"name": name, "status": "warn", "detail": str(exc)[:80], "fix": fix})
 
     probe("caller identity (STS)", lambda: f"account {api.account_id}",
-          "export a valid admin VOLCENGINE_ACCESS_KEY / _SECRET_KEY")
+          f"export a valid admin {api.cred_env_hint}")
     def _pools():
         r = api.call("id", "ListUserPools", "2025-10-30", {"PageNumber": 1, "PageSize": 1})
         return f"reachable ({r.get('TotalCount') or r.get('Total') or len(r.get('Items') or r.get('Data') or [])}+ pools)"

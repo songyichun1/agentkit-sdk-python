@@ -12,18 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Minimal signed Volcengine OpenAPI client for the auth ADMIN commands.
+"""Minimal signed OpenAPI client for the auth ADMIN commands.
 
 Stdlib-only SigV4 (reusing :mod:`agentkit.auth._sigv4`) so the admin path that
 provisions the UserPool client / IAM OIDC provider / STS role carries no
 third-party dependency. Used only by ``agentkit auth admin`` — the end-user login
 path never touches it. A mandatory ``GetCallerIdentity`` guard runs before any write.
+
+Credentials and the OpenAPI gateway host are resolved through the SDK's unified,
+Cloud-Provider-aware chain (:class:`agentkit.platform.configuration.VolcConfiguration`),
+so ``CLOUD_PROVIDER=byteplus`` uses ``BYTEPLUS_ACCESS_KEY`` / ``BYTEPLUS_SECRET_KEY``
+and ``open.byteplusapi.com`` instead of the Volcengine equivalents.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,8 +35,9 @@ import urllib.request
 from agentkit.auth._sigv4 import sign_headers
 from agentkit.auth.errors import AuthError
 from agentkit.auth.ssl_trust import harden_default_ssl_context
+from agentkit.platform.configuration import VolcConfiguration
+from agentkit.platform.provider import CloudProvider
 
-_HOST = "open.volcengineapi.com"
 # Services whose OpenAPI reads parameters from the query string, not a JSON body.
 _QUERY_PARAM_SERVICES = {"iam"}
 
@@ -85,21 +90,51 @@ class OpenApiClient:
         access_key: str | None = None,
         secret_key: str | None = None,
         session_token: str | None = None,
-        region: str = "cn-beijing",
+        region: str | None = None,
         expect_account: str | None = None,
         harden_ssl: bool = True,
     ) -> None:
         if harden_ssl:
             harden_default_ssl_context()
-        self.ak = access_key or os.getenv("VOLCENGINE_ACCESS_KEY") or os.getenv("VOLC_ACCESSKEY")
-        self.sk = secret_key or os.getenv("VOLCENGINE_SECRET_KEY") or os.getenv("VOLC_SECRETKEY")
-        self.token = session_token or os.getenv("VOLCENGINE_SESSION_TOKEN")
-        if not (self.ak and self.sk):
+        # Credentials/region come from the SDK's unified provider-aware chain
+        # (CLOUD_PROVIDER=volcengine|byteplus), so the admin path accepts the same
+        # sources as the runtime clients: BYTEPLUS_* on BytePlus, VOLCENGINE_* /
+        # VOLC_* on Volcengine, plus ~/.agentkit/config.yaml.
+        cfg = VolcConfiguration(
+            region=region,
+            access_key=access_key,
+            secret_key=secret_key,
+            session_token=session_token,
+        )
+        self.provider = cfg.provider
+        if self.provider == CloudProvider.BYTEPLUS:
+            provider_label = "BytePlus"
+            self.cred_env_hint = "BYTEPLUS_ACCESS_KEY / BYTEPLUS_SECRET_KEY"
+        else:
+            provider_label = "Volcengine"
+            self.cred_env_hint = "VOLCENGINE_ACCESS_KEY / VOLCENGINE_SECRET_KEY"
+        try:
+            creds = cfg.get_service_credentials("iam")
+        except ValueError as exc:
             raise AuthError(
-                "admin provisioning needs Volcengine credentials.",
-                hint="export VOLCENGINE_ACCESS_KEY / VOLCENGINE_SECRET_KEY for the account that owns the UserPool.",
+                f"admin provisioning needs {provider_label} credentials.",
+                hint=f"export {self.cred_env_hint} for the account that owns the UserPool.",
+            ) from exc
+        if creds.source == "sso-sts":
+            # `agentkit login` stores the END-USER sandbox STS role; provisioning
+            # UserPool/IAM resources needs the account's long-lived admin AK/SK.
+            raise AuthError(
+                "admin provisioning cannot use the SSO login session (it carries the "
+                "end-user sandbox role, not account admin rights).",
+                hint=f"export {self.cred_env_hint} for the account that owns the UserPool.",
             )
-        self.region = region
+        self.ak = creds.access_key
+        self.sk = creds.secret_key
+        self.token = session_token or creds.session_token
+        # Every admin control-plane call signs against the provider's top OpenAPI
+        # gateway — the same host that serves the provider's IAM service.
+        self._host = cfg.get_service_endpoint("iam").host
+        self.region = cfg.region
         ident = self.call("sts", "GetCallerIdentity", "2018-01-01", {})
         self.account_id = str(ident.get("AccountId") or "")
         if expect_account and self.account_id != expect_account:
@@ -121,11 +156,11 @@ class OpenApiClient:
             query = {"Action": action, "Version": version}
             payload = json.dumps(body).encode()
         headers = sign_headers(
-            "POST", _HOST, query, payload,
+            "POST", self._host, query, payload,
             access_key=self.ak, secret_key=self.sk, service=service, region=self.region,
             session_token=self.token,
         )
-        url = f"https://{_HOST}/?{urllib.parse.urlencode(query)}"
+        url = f"https://{self._host}/?{urllib.parse.urlencode(query)}"
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
         try:
             raw = urllib.request.urlopen(req, timeout=30).read()
@@ -147,11 +182,11 @@ class OpenApiClient:
             else:
                 query[k] = str(v)
         headers = sign_headers(
-            "GET", _HOST, query, b"",
+            "GET", self._host, query, b"",
             access_key=self.ak, secret_key=self.sk, service=service, region=self.region,
             session_token=self.token,
         )
-        url = f"https://{_HOST}/?{urllib.parse.urlencode(query)}"
+        url = f"https://{self._host}/?{urllib.parse.urlencode(query)}"
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
             raw = urllib.request.urlopen(req, timeout=30).read()
