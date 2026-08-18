@@ -210,6 +210,95 @@ class TestResolveIssuer:
         )
 
 
+class _ScriptedApi:
+    """Fake OpenApiClient: canned responses/errors keyed by (service, action)."""
+
+    def __init__(self, script):
+        self.script = script  # {(service, action): result | Exception | callable(body)}
+        self.calls = []
+
+    def call(self, service, action, version, body):
+        self.calls.append((service, action, body))
+        entry = self.script[(service, action)]
+        if callable(entry) and not isinstance(entry, Exception):
+            entry = entry(body)
+        if isinstance(entry, Exception):
+            raise entry
+        return entry
+
+    call_ok = call
+
+
+class TestIdempotentReruns:
+    """Re-running sso-setup must reuse what earlier runs left behind."""
+
+    def test_create_user_pool_reuses_same_name_pool(self):
+        from agentkit.auth._openapi import ApiError
+        from agentkit.auth.admin import create_user_pool
+
+        api = _ScriptedApi({
+            ("id", "CreateUserPool"): ApiError("CreateUserPool", "Duplicated", "already exists"),
+            ("id", "ListUserPools"): {"Data": [
+                {"Name": "other", "Uid": "u-other"},
+                {"Name": "agentkit-cli-pool", "Uid": "u-reused"},
+            ]},
+            ("id", "GetUserPool"): {"IssuerUrl": "https://pool.example"},
+        })
+        uid, issuer = create_user_pool("agentkit-cli-pool", region="ap-southeast-1", api=api)
+        assert (uid, issuer) == ("u-reused", "https://pool.example")
+
+    def test_create_user_pool_other_errors_propagate(self):
+        from agentkit.auth._openapi import ApiError
+        from agentkit.auth.admin import create_user_pool
+
+        api = _ScriptedApi({
+            ("id", "CreateUserPool"): ApiError("CreateUserPool", "AccessDenied", "no"),
+        })
+        with pytest.raises(ApiError):
+            create_user_pool("p", region="cn-beijing", api=api)
+
+    def test_ensure_role_updates_existing_without_create(self):
+        """Quota-full accounts return LimitExceeded before the duplicate-name check,
+        so an existing role must be detected via GetRole, never via CreateRole."""
+        from agentkit.auth.admin import _ensure_role
+
+        api = _ScriptedApi({
+            ("iam", "GetRole"): {"RoleName": "r"},
+            ("iam", "UpdateRole"): {},
+            ("iam", "CreatePolicy"): {},
+            ("iam", "AttachRolePolicy"): {},
+        })
+        _ensure_role(api, "trn:iam::1:oidc-provider/p", role_name="r")
+        actions = [a for _, a, _ in api.calls]
+        assert "CreateRole" not in actions
+        assert "UpdateRole" in actions
+
+    def test_ensure_role_creates_when_missing(self):
+        from agentkit.auth._openapi import ApiError
+        from agentkit.auth.admin import _ensure_role
+
+        api = _ScriptedApi({
+            ("iam", "GetRole"): ApiError("GetRole", "RoleNotExist", "missing"),
+            ("iam", "CreateRole"): {},
+            ("iam", "CreatePolicy"): {},
+            ("iam", "AttachRolePolicy"): {},
+        })
+        _ensure_role(api, "trn:iam::1:oidc-provider/p", role_name="r")
+        assert "CreateRole" in [a for _, a, _ in api.calls]
+
+    def test_ensure_role_quota_error_propagates_when_truly_missing(self):
+        from agentkit.auth._openapi import ApiError
+        from agentkit.auth.admin import _ensure_role
+
+        api = _ScriptedApi({
+            ("iam", "GetRole"): ApiError("GetRole", "RoleNotExist", "missing"),
+            ("iam", "CreateRole"): ApiError("CreateRole", "LimitExceeded", "RolesPerAccount"),
+        })
+        with pytest.raises(ApiError) as exc:
+            _ensure_role(api, "trn:iam::1:oidc-provider/p", role_name="r")
+        assert exc.value.code == "LimitExceeded"
+
+
 class TestTosPublicHost:
     def test_volcengine(self, isolated_env):
         from agentkit.auth.admin import tos_public_host

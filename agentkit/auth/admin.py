@@ -157,16 +157,47 @@ def identity_console_url(region: str = "cn-beijing", *, user_pool_uid: str | Non
 
 
 def create_user_pool(name: str, *, region: str = "cn-beijing", api: OpenApiClient | None = None) -> tuple[str, str]:
-    """Create a UserPool; return ``(uid, issuer)``."""
+    """Create (or, on a re-run, reuse) the UserPool named ``name``; return ``(uid, issuer)``.
+
+    A same-name pool left by an earlier run is reused instead of failing with
+    ``Duplicated`` — sso-setup must stay idempotent to re-run.
+    """
     api = api or OpenApiClient(region=region)
-    res = api.call("id", "CreateUserPool", "2025-10-30", {
-        "Name": name, "Description": "AgentKit CLI login pool",
-        "PasswordSignInEnabled": True, "SelfSignUpEnabled": False,
-    })
+    try:
+        res = api.call("id", "CreateUserPool", "2025-10-30", {
+            "Name": name, "Description": "AgentKit CLI login pool",
+            "PasswordSignInEnabled": True, "SelfSignUpEnabled": False,
+        })
+    except ApiError as exc:
+        if not any(k in exc.code for k in ("Duplicat", "Exist", "Conflict")):
+            raise
+        existing = _find_pool_by_name(api, name)
+        if not existing:
+            raise
+        return existing, resolve_issuer(api, existing, region)
     uid = str(res.get("Uid") or res.get("uid") or "")
     if not uid:
         raise AuthError(f"CreateUserPool returned no uid: {json.dumps(res)[:200]}")
     return uid, resolve_issuer(api, uid, region)
+
+
+def _find_pool_by_name(api: OpenApiClient, name: str) -> str | None:
+    """Uid of the pool named ``name``, or None. Raises if the name is ambiguous."""
+    matches: list[str] = []
+    page = 1
+    while page <= 10:  # 500 pools is far beyond any real account
+        r = api.call("id", "ListUserPools", "2025-10-30", {"PageNumber": page, "PageSize": 50})
+        data = r.get("Data") or []
+        matches += [str(p.get("Uid")) for p in data if p.get("Name") == name and p.get("Uid")]
+        if len(data) < 50:
+            break
+        page += 1
+    if len(matches) > 1:
+        raise AuthError(
+            f"{len(matches)} user pools are named {name!r}; pass the intended one "
+            "explicitly with --user-pool <uid>."
+        )
+    return matches[0] if matches else None
 
 
 def _ensure_cli_client(api: OpenApiClient, user_pool_uid: str, client_name: str = CLI_CLIENT_NAME) -> str:
@@ -239,18 +270,33 @@ def _ensure_role(
 ) -> None:
     trust = {"Statement": [{"Effect": "Allow", "Principal": {"Federated": [provider_trn]},
                             "Action": ["sts:AssumeRoleWithOIDC"]}]}
+    # Probe existence BEFORE CreateRole: an account at its RolesPerAccount quota
+    # returns LimitExceeded before the duplicate-name check, which would wrongly
+    # kill re-runs (and --role-name reuse) even though the role is already there.
+    role_exists = True
     try:
-        api.call("iam", "CreateRole", "2018-01-01", {
-            "RoleName": role_name, "DisplayName": role_name,
-            "TrustPolicyDocument": json.dumps(trust), "MaxSessionDuration": 3600,
-            "Description": "STS role for AgentKit CLI (UserPool federated)",
-        })
+        api.call("iam", "GetRole", "2018-01-01", {"RoleName": role_name})
     except ApiError as exc:
-        if "Exist" not in exc.code and "Conflict" not in exc.code:
+        if not any(k in exc.code for k in ("NotExist", "NoSuchEntity", "NotFound")):
             raise
+        role_exists = False
+    if role_exists:
         api.call("iam", "UpdateRole", "2018-01-01",
                  {"RoleName": role_name, "TrustPolicyDocument": json.dumps(trust),
                   "MaxSessionDuration": 3600})
+    else:
+        try:
+            api.call("iam", "CreateRole", "2018-01-01", {
+                "RoleName": role_name, "DisplayName": role_name,
+                "TrustPolicyDocument": json.dumps(trust), "MaxSessionDuration": 3600,
+                "Description": "STS role for AgentKit CLI (UserPool federated)",
+            })
+        except ApiError as exc:
+            if "Exist" not in exc.code and "Conflict" not in exc.code:
+                raise
+            api.call("iam", "UpdateRole", "2018-01-01",
+                     {"RoleName": role_name, "TrustPolicyDocument": json.dumps(trust),
+                      "MaxSessionDuration": 3600})
     doc = {"Statement": [{"Effect": "Allow", "Action": list(ROLE_ACTIONS), "Resource": ["*"]}]}
     api.call_ok("iam", "CreatePolicy", "2018-01-01",
                 {"PolicyName": policy_name, "PolicyDocument": json.dumps(doc),
