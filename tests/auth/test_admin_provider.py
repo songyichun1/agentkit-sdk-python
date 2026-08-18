@@ -165,6 +165,51 @@ class TestOpenApiClientProviderAware:
         assert "VOLCENGINE_ACCESS_KEY" in (exc.value.hint or "")
 
 
+class TestResolveIssuer:
+    """The issuer must come from the platform (GetUserPool), not a domain template —
+    IAM CreateOIDCProvider validates the issuer's discovery endpoint, and the
+    Volcengine template is wrong on BytePlus."""
+
+    class _FakeApi:
+        def __init__(self, result=None, exc=None):
+            self._result = result
+            self._exc = exc
+
+        def call(self, service, action, version, body):
+            assert (service, action) == ("id", "GetUserPool")
+            assert body == {"UserPoolUid": "uid-1"}
+            if self._exc:
+                raise self._exc
+            return self._result
+
+    def test_platform_issuer_url_wins(self):
+        from agentkit.auth.admin import resolve_issuer
+
+        api = self._FakeApi(
+            {"IssuerUrl": "https://userpool-uid-1.userpool.auth.id.ap-southeast-1.byteplus.example/"}
+        )
+        assert (
+            resolve_issuer(api, "uid-1", "ap-southeast-1")
+            == "https://userpool-uid-1.userpool.auth.id.ap-southeast-1.byteplus.example"
+        )
+
+    def test_domain_fallback(self):
+        from agentkit.auth.admin import resolve_issuer
+
+        api = self._FakeApi({"IssuerUrl": "", "Domain": "pool.example.com"})
+        assert resolve_issuer(api, "uid-1", "cn-beijing") == "https://pool.example.com"
+
+    def test_template_fallback_on_api_error(self):
+        from agentkit.auth._openapi import ApiError
+        from agentkit.auth.admin import resolve_issuer
+
+        api = self._FakeApi(exc=ApiError("GetUserPool", "InternalError", "boom"))
+        assert (
+            resolve_issuer(api, "uid-1", "cn-beijing")
+            == "https://userpool-uid-1.userpool.auth.id.cn-beijing.volces.com"
+        )
+
+
 class TestTosPublicHost:
     def test_volcengine(self, isolated_env):
         from agentkit.auth.admin import tos_public_host

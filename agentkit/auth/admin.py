@@ -98,10 +98,37 @@ def tos_public_host(region: str) -> str:
 
 
 def _issuer(user_pool_uid: str, region: str) -> str:
-    # NOTE: this is the Volcengine UserPool issuer domain. Whether/where the
-    # UserPool (id) service is exposed on BytePlus is a platform question; the
-    # CreateUserPool call itself fails first on accounts without the service.
+    # Volcengine UserPool issuer domain template — LAST-RESORT fallback only.
+    # The real issuer is read from the platform (GetUserPool.IssuerUrl), which is
+    # provider-correct by construction; this template is wrong on BytePlus.
     return f"https://userpool-{user_pool_uid}.userpool.auth.id.{region}.volces.com"
+
+
+def _pool_info(api: OpenApiClient, user_pool_uid: str) -> dict:
+    """Best-effort GetUserPool detail; {} when the call fails."""
+    try:
+        return api.call("id", "GetUserPool", "2025-10-30", {"UserPoolUid": user_pool_uid})
+    except (ApiError, AuthError):
+        return {}
+
+
+def resolve_issuer(api: OpenApiClient, user_pool_uid: str, region: str) -> str:
+    """The pool's real issuer URL, read from the platform.
+
+    ``GetUserPool`` returns ``IssuerUrl`` (and ``Domain`` / ``CustomDomain``), so the
+    issuer is whatever domain the current cloud provider actually serves — no
+    hardcoded domain. IAM's ``CreateOIDCProvider`` validates the issuer's OIDC
+    discovery endpoint, so a template-guessed domain fails on BytePlus.
+    Falls back to the Volcengine template only if the platform returns nothing.
+    """
+    info = _pool_info(api, user_pool_uid)
+    issuer = str(info.get("IssuerUrl") or "").rstrip("/")
+    if issuer:
+        return issuer
+    domain = str(info.get("CustomDomain") or info.get("Domain") or "").strip()
+    if domain:
+        return f"https://{domain}"
+    return _issuer(user_pool_uid, region)
 
 
 def identity_console_url(region: str = "cn-beijing", *, user_pool_uid: str | None = None) -> str:
@@ -123,7 +150,7 @@ def create_user_pool(name: str, *, region: str = "cn-beijing", api: OpenApiClien
     uid = str(res.get("Uid") or res.get("uid") or "")
     if not uid:
         raise AuthError(f"CreateUserPool returned no uid: {json.dumps(res)[:200]}")
-    return uid, _issuer(uid, region)
+    return uid, resolve_issuer(api, uid, region)
 
 
 def _ensure_cli_client(api: OpenApiClient, user_pool_uid: str, client_name: str = CLI_CLIENT_NAME) -> str:
@@ -247,7 +274,7 @@ def provision_cli_access(
     """
     api = api or OpenApiClient(region=region, expect_account=account_id)
     acct = account_id or api.account_id
-    issuer = _issuer(user_pool_uid, region)
+    issuer = resolve_issuer(api, user_pool_uid, region)
     client_id = _ensure_cli_client(api, user_pool_uid, client_name)
     if not client_id:
         raise AuthError("could not create or find the public CLI client")
@@ -291,7 +318,12 @@ def ensure_federation(
     preset = _IDP_PRESETS.get(idp)
     if not preset:
         raise AuthError(f"unknown idp {idp!r}; supported: {', '.join(_IDP_PRESETS)}")
-    callback = f"{_issuer(user_pool_uid, region)}/login/generic_oauth/callback"
+    # The platform publishes the pool's exact OAuth callback; derive it from the
+    # resolved issuer only when the field is absent.
+    info = _pool_info(api, user_pool_uid)
+    callback = str(info.get("OauthLoginCallbackUrl") or "") or (
+        f"{resolve_issuer(api, user_pool_uid, region)}/login/generic_oauth/callback"
+    )
     lst = api.call("id", "ListIdentityProviders", "2025-10-30",
                    {"UserPoolUID": user_pool_uid, "PageNumber": 1, "PageSize": 50})
     for it in (lst.get("Data") or lst.get("data") or []):
