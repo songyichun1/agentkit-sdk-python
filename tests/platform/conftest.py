@@ -27,6 +27,7 @@ def clean_env(monkeypatch):
             in {
                 "AGENTKIT_CLOUD_PROVIDER",
                 "CLOUD_PROVIDER",
+                "REGION",
             }
         ):
             monkeypatch.delenv(key)

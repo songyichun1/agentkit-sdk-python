@@ -146,7 +146,8 @@ class VolcConfiguration:
         1. Explicitly passed in constructor
         2. Environment variable (VOLCENGINE_REGION / VOLC_REGION)
         3. Global config file (~/.agentkit/config.yaml)
-        4. Default (cn-beijing)
+        4. Environment variable (REGION)
+        5. Default (cn-beijing)
         """
         if self._region:
             return self._region
@@ -163,6 +164,7 @@ class VolcConfiguration:
                 or os.getenv("VOLC_REGION")
                 or get_global_config_str("region")
                 or get_global_config_str("volcengine", "region")
+                or os.getenv("REGION")
             )
 
         if base_region:
@@ -409,7 +411,9 @@ class VolcConfiguration:
         else:
             ak = os.getenv("VOLCENGINE_ACCESS_KEY") or os.getenv("VOLC_ACCESSKEY")
             sk = os.getenv("VOLCENGINE_SECRET_KEY") or os.getenv("VOLC_SECRETKEY")
-            token = os.getenv("VOLCENGINE_SESSION_TOKEN") or os.getenv("VOLC_SESSIONTOKEN")
+            token = os.getenv("VOLCENGINE_SESSION_TOKEN") or os.getenv(
+                "VOLC_SESSIONTOKEN"
+            )
 
         if ak and sk:
             return Credentials(
