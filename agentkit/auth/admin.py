@@ -73,9 +73,10 @@ class CliAccessCoords:
     client_id: str
     role_trn: str
     provider_trn: str
+    sts_host: str | None = None  # provider STS endpoint (None = Volcengine default)
 
     def discovery_doc(self) -> dict:
-        return {
+        doc = {
             "issuer": self.issuer,
             "client_id": self.client_id,
             "role_trn": self.role_trn,
@@ -84,10 +85,66 @@ class CliAccessCoords:
             "transport": "sts",
             "scope": "openid profile email offline_access",
         }
+        if self.sts_host:
+            doc["sts_host"] = self.sts_host
+        return doc
+
+
+def tos_public_host(region: str) -> str:
+    """Provider-aware public host of the TOS static-site endpoint for *region*.
+
+    ``tos-<region>.volces.com`` on Volcengine, ``tos-<region>.bytepluses.com`` on
+    BytePlus — resolved from the platform service registry, not hardcoded here.
+    """
+    from agentkit.platform.configuration import VolcConfiguration
+
+    return VolcConfiguration(region=region).get_service_endpoint("tos").host
+
+
+def sts_public_host(region: str) -> str:
+    """Provider-aware STS endpoint for *region*, from the platform service registry.
+
+    Published in the discovery doc as ``sts_host`` so the end-user login exchanges
+    the id_token against the pool's own cloud (BytePlus pools must not call the
+    Volcengine STS).
+    """
+    from agentkit.platform.configuration import VolcConfiguration
+
+    return VolcConfiguration(region=region).get_service_endpoint("sts").host
 
 
 def _issuer(user_pool_uid: str, region: str) -> str:
+    # Volcengine UserPool issuer domain template — LAST-RESORT fallback only.
+    # The real issuer is read from the platform (GetUserPool.IssuerUrl), which is
+    # provider-correct by construction; this template is wrong on BytePlus.
     return f"https://userpool-{user_pool_uid}.userpool.auth.id.{region}.volces.com"
+
+
+def _pool_info(api: OpenApiClient, user_pool_uid: str) -> dict:
+    """Best-effort GetUserPool detail; {} when the call fails."""
+    try:
+        return api.call("id", "GetUserPool", "2025-10-30", {"UserPoolUid": user_pool_uid})
+    except (ApiError, AuthError):
+        return {}
+
+
+def resolve_issuer(api: OpenApiClient, user_pool_uid: str, region: str) -> str:
+    """The pool's real issuer URL, read from the platform.
+
+    ``GetUserPool`` returns ``IssuerUrl`` (and ``Domain`` / ``CustomDomain``), so the
+    issuer is whatever domain the current cloud provider actually serves — no
+    hardcoded domain. IAM's ``CreateOIDCProvider`` validates the issuer's OIDC
+    discovery endpoint, so a template-guessed domain fails on BytePlus.
+    Falls back to the Volcengine template only if the platform returns nothing.
+    """
+    info = _pool_info(api, user_pool_uid)
+    issuer = str(info.get("IssuerUrl") or "").rstrip("/")
+    if issuer:
+        return issuer
+    domain = str(info.get("CustomDomain") or info.get("Domain") or "").strip()
+    if domain:
+        return f"https://{domain}"
+    return _issuer(user_pool_uid, region)
 
 
 def identity_console_url(region: str = "cn-beijing", *, user_pool_uid: str | None = None) -> str:
@@ -100,16 +157,47 @@ def identity_console_url(region: str = "cn-beijing", *, user_pool_uid: str | Non
 
 
 def create_user_pool(name: str, *, region: str = "cn-beijing", api: OpenApiClient | None = None) -> tuple[str, str]:
-    """Create a UserPool; return ``(uid, issuer)``."""
+    """Create (or, on a re-run, reuse) the UserPool named ``name``; return ``(uid, issuer)``.
+
+    A same-name pool left by an earlier run is reused instead of failing with
+    ``Duplicated`` — sso-setup must stay idempotent to re-run.
+    """
     api = api or OpenApiClient(region=region)
-    res = api.call("id", "CreateUserPool", "2025-10-30", {
-        "Name": name, "Description": "AgentKit CLI login pool",
-        "PasswordSignInEnabled": True, "SelfSignUpEnabled": False,
-    })
+    try:
+        res = api.call("id", "CreateUserPool", "2025-10-30", {
+            "Name": name, "Description": "AgentKit CLI login pool",
+            "PasswordSignInEnabled": True, "SelfSignUpEnabled": False,
+        })
+    except ApiError as exc:
+        if not any(k in exc.code for k in ("Duplicat", "Exist", "Conflict")):
+            raise
+        existing = _find_pool_by_name(api, name)
+        if not existing:
+            raise
+        return existing, resolve_issuer(api, existing, region)
     uid = str(res.get("Uid") or res.get("uid") or "")
     if not uid:
         raise AuthError(f"CreateUserPool returned no uid: {json.dumps(res)[:200]}")
-    return uid, _issuer(uid, region)
+    return uid, resolve_issuer(api, uid, region)
+
+
+def _find_pool_by_name(api: OpenApiClient, name: str) -> str | None:
+    """Uid of the pool named ``name``, or None. Raises if the name is ambiguous."""
+    matches: list[str] = []
+    page = 1
+    while page <= 10:  # 500 pools is far beyond any real account
+        r = api.call("id", "ListUserPools", "2025-10-30", {"PageNumber": page, "PageSize": 50})
+        data = r.get("Data") or []
+        matches += [str(p.get("Uid")) for p in data if p.get("Name") == name and p.get("Uid")]
+        if len(data) < 50:
+            break
+        page += 1
+    if len(matches) > 1:
+        raise AuthError(
+            f"{len(matches)} user pools are named {name!r}; pass the intended one "
+            "explicitly with --user-pool <uid>."
+        )
+    return matches[0] if matches else None
 
 
 def _ensure_cli_client(api: OpenApiClient, user_pool_uid: str, client_name: str = CLI_CLIENT_NAME) -> str:
@@ -182,18 +270,33 @@ def _ensure_role(
 ) -> None:
     trust = {"Statement": [{"Effect": "Allow", "Principal": {"Federated": [provider_trn]},
                             "Action": ["sts:AssumeRoleWithOIDC"]}]}
+    # Probe existence BEFORE CreateRole: an account at its RolesPerAccount quota
+    # returns LimitExceeded before the duplicate-name check, which would wrongly
+    # kill re-runs (and --role-name reuse) even though the role is already there.
+    role_exists = True
     try:
-        api.call("iam", "CreateRole", "2018-01-01", {
-            "RoleName": role_name, "DisplayName": role_name,
-            "TrustPolicyDocument": json.dumps(trust), "MaxSessionDuration": 3600,
-            "Description": "STS role for AgentKit CLI (UserPool federated)",
-        })
+        api.call("iam", "GetRole", "2018-01-01", {"RoleName": role_name})
     except ApiError as exc:
-        if "Exist" not in exc.code and "Conflict" not in exc.code:
+        if not any(k in exc.code for k in ("NotExist", "NoSuchEntity", "NotFound")):
             raise
+        role_exists = False
+    if role_exists:
         api.call("iam", "UpdateRole", "2018-01-01",
                  {"RoleName": role_name, "TrustPolicyDocument": json.dumps(trust),
                   "MaxSessionDuration": 3600})
+    else:
+        try:
+            api.call("iam", "CreateRole", "2018-01-01", {
+                "RoleName": role_name, "DisplayName": role_name,
+                "TrustPolicyDocument": json.dumps(trust), "MaxSessionDuration": 3600,
+                "Description": "STS role for AgentKit CLI (UserPool federated)",
+            })
+        except ApiError as exc:
+            if "Exist" not in exc.code and "Conflict" not in exc.code:
+                raise
+            api.call("iam", "UpdateRole", "2018-01-01",
+                     {"RoleName": role_name, "TrustPolicyDocument": json.dumps(trust),
+                      "MaxSessionDuration": 3600})
     doc = {"Statement": [{"Effect": "Allow", "Action": list(ROLE_ACTIONS), "Resource": ["*"]}]}
     api.call_ok("iam", "CreatePolicy", "2018-01-01",
                 {"PolicyName": policy_name, "PolicyDocument": json.dumps(doc),
@@ -233,7 +336,7 @@ def provision_cli_access(
     """
     api = api or OpenApiClient(region=region, expect_account=account_id)
     acct = account_id or api.account_id
-    issuer = _issuer(user_pool_uid, region)
+    issuer = resolve_issuer(api, user_pool_uid, region)
     client_id = _ensure_cli_client(api, user_pool_uid, client_name)
     if not client_id:
         raise AuthError("could not create or find the public CLI client")
@@ -243,6 +346,7 @@ def provision_cli_access(
     return CliAccessCoords(
         account_id=acct, region=region, user_pool_uid=user_pool_uid, issuer=issuer,
         client_id=client_id, role_trn=f"trn:iam::{acct}:role/{role_name}", provider_trn=provider_trn,
+        sts_host=sts_public_host(region),
     )
 
 
@@ -277,7 +381,12 @@ def ensure_federation(
     preset = _IDP_PRESETS.get(idp)
     if not preset:
         raise AuthError(f"unknown idp {idp!r}; supported: {', '.join(_IDP_PRESETS)}")
-    callback = f"{_issuer(user_pool_uid, region)}/login/generic_oauth/callback"
+    # The platform publishes the pool's exact OAuth callback; derive it from the
+    # resolved issuer only when the field is absent.
+    info = _pool_info(api, user_pool_uid)
+    callback = str(info.get("OauthLoginCallbackUrl") or "") or (
+        f"{resolve_issuer(api, user_pool_uid, region)}/login/generic_oauth/callback"
+    )
     lst = api.call("id", "ListIdentityProviders", "2025-10-30",
                    {"UserPoolUID": user_pool_uid, "PageNumber": 1, "PageSize": 50})
     for it in (lst.get("Data") or lst.get("data") or []):
@@ -349,7 +458,7 @@ def sso_setup(
     if custom_domain:
         manual.append(
             f"把自定义域名指向该 bucket:CNAME {custom_domain} -> "
-            f"{bucket}.tos-{region}.volces.com,并配置 https 证书(TOS/CDN)。"
+            f"{bucket}.{tos_public_host(region)},并配置 https 证书(TOS/CDN)。"
         )
     return SsoSetupResult(login_address=url, coords=coords, manual_steps=manual)
 
@@ -371,18 +480,28 @@ def publish_discovery(
     The returned URL is what the end user types: ``agentkit login <url>``.
     """
     try:
-        import os as _os
-
         import tos  # type: ignore
     except Exception as exc:  # pragma: no cover - optional dep
         raise AuthError(
             "publishing needs the `tos` package (`pip install tos`), or host the "
             "discovery doc yourself.",
         ) from exc
-    ak = access_key or _os.getenv("VOLCENGINE_ACCESS_KEY")
-    sk = secret_key or _os.getenv("VOLCENGINE_SECRET_KEY")
-    token = session_token or _os.getenv("VOLCENGINE_SESSION_TOKEN")
-    endpoint = f"tos-{coords.region}.volces.com"
+    from agentkit.platform.configuration import VolcConfiguration
+
+    cfg = VolcConfiguration(
+        region=coords.region, access_key=access_key, secret_key=secret_key,
+        session_token=session_token,
+    )
+    try:
+        creds = cfg.get_service_credentials("tos")
+    except ValueError as exc:
+        raise AuthError(
+            "publishing the discovery doc needs cloud credentials for TOS.",
+            hint=str(exc).split("\n")[0],
+        ) from exc
+    ak, sk = creds.access_key, creds.secret_key
+    token = session_token or creds.session_token
+    endpoint = cfg.get_service_endpoint("tos").host
     client = tos.TosClientV2(ak, sk, endpoint, coords.region, security_token=token)
     try:
         client.create_bucket(bucket, acl=tos.ACLType.ACL_Public_Read)
@@ -453,7 +572,7 @@ def preflight(api: OpenApiClient, *, credential_hosting: bool = True) -> list[di
             checks.append({"name": name, "status": "warn", "detail": str(exc)[:80], "fix": fix})
 
     probe("caller identity (STS)", lambda: f"account {api.account_id}",
-          "export a valid admin VOLCENGINE_ACCESS_KEY / _SECRET_KEY")
+          f"export a valid admin {api.cred_env_hint}")
     def _pools():
         r = api.call("id", "ListUserPools", "2025-10-30", {"PageNumber": 1, "PageSize": 1})
         return f"reachable ({r.get('TotalCount') or r.get('Total') or len(r.get('Items') or r.get('Data') or [])}+ pools)"

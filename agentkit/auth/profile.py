@@ -35,7 +35,7 @@ from agentkit.auth.errors import AuthError
 
 _PROFILE_FIELDS = {
     "name", "issuer", "client_id", "role_trn", "provider_trn",
-    "region", "scope", "transport", "address",
+    "region", "scope", "transport", "address", "sts_host",
 }
 
 
@@ -52,6 +52,7 @@ class AuthProfile:
     scope: str = "openid profile email offline_access"
     transport: str = "sts"  # "sts" (sandbox) | reserved for future transports
     address: str | None = None  # the login address this profile was resolved from
+    sts_host: str | None = None  # provider STS endpoint from the discovery doc (None = Volcengine default)
 
     def validate(self) -> "AuthProfile":
         missing = [k for k in ("name", "issuer", "client_id", "role_trn") if not getattr(self, k)]

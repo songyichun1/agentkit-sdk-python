@@ -161,16 +161,24 @@ def _profile_app() -> typer.Typer:
     return app
 
 
+def _default_region() -> str:
+    """Provider-aware default region (CLOUD_PROVIDER + env/config), for --region."""
+    from agentkit.platform.configuration import VolcConfiguration
+
+    return VolcConfiguration().region
+
+
 def _admin_app() -> typer.Typer:
     app = typer.Typer(
         help="Admin: provision UserPool CLI login and publish its discovery doc. "
-        "Needs Volcengine AK/SK for the account that owns the UserPool.",
+        "Needs the cloud account's AK/SK (Volcengine or BytePlus, per CLOUD_PROVIDER) "
+        "for the account that owns the UserPool.",
     )
 
     @app.command("doctor")
     def doctor(
         account: Optional[str] = typer.Option(None, "--account", help="Expected account id (guard)."),
-        region: str = typer.Option("cn-beijing", "--region"),
+        region: Optional[str] = typer.Option(None, "--region", help="Region (default: the provider's default region)."),
         data_plane: bool = typer.Option(
             True, "--data-plane/--no-data-plane",
             help="Also check credential-hosting prerequisites (APIG / VPC / VeFaaS / KMS)."),
@@ -184,6 +192,7 @@ def _admin_app() -> typer.Typer:
         from agentkit.auth.admin import preflight
         from agentkit.auth.errors import AuthError
 
+        region = region or _default_region()
         try:
             api = OpenApiClient(region=region, expect_account=account)
         except AuthError as exc:
@@ -217,12 +226,13 @@ def _admin_app() -> typer.Typer:
     @app.command("create-userpool")
     def create_userpool(
         name: str = typer.Option(..., "--name", help="UserPool name."),
-        region: str = typer.Option("cn-beijing", "--region"),
+        region: Optional[str] = typer.Option(None, "--region", help="Region (default: the provider's default region)."),
     ) -> None:
         """Create a UserPool (the IdP). Federate it to Feishu/ByteDance-SSO in the console."""
         from agentkit.auth.admin import create_user_pool
         from agentkit.auth.errors import AuthError
 
+        region = region or _default_region()
         try:
             uid, issuer = create_user_pool(name, region=region)
         except AuthError as exc:
@@ -234,12 +244,13 @@ def _admin_app() -> typer.Typer:
     def provision(
         user_pool: str = typer.Option(..., "--user-pool", help="UserPool uid."),
         account: Optional[str] = typer.Option(None, "--account", help="Account id (default: caller)."),
-        region: str = typer.Option("cn-beijing", "--region"),
+        region: Optional[str] = typer.Option(None, "--region", help="Region (default: the provider's default region)."),
     ) -> None:
         """Ensure the public CLI client + IAM OIDC provider + STS role (idempotent)."""
         from agentkit.auth.admin import provision_cli_access
         from agentkit.auth.errors import AuthError
 
+        region = region or _default_region()
         try:
             coords = provision_cli_access(user_pool, region=region, account_id=account)
         except AuthError as exc:
@@ -253,7 +264,7 @@ def _admin_app() -> typer.Typer:
         user_pool: Optional[str] = typer.Option(None, "--user-pool", help="Reuse an existing UserPool uid."),
         create_pool: Optional[str] = typer.Option(None, "--create-pool", help="Create a new UserPool with this name."),
         account: Optional[str] = typer.Option(None, "--account", help="Account id (default: caller)."),
-        region: str = typer.Option("cn-beijing", "--region"),
+        region: Optional[str] = typer.Option(None, "--region", help="Region (default: the provider's default region)."),
         idp: Optional[str] = typer.Option(None, "--idp", help="Federate an upstream IdP: bytedance | feishu."),
         idp_client_id: Optional[str] = typer.Option(None, "--idp-client-id"),
         idp_secret: Optional[str] = typer.Option(None, "--idp-secret"),
@@ -270,9 +281,10 @@ def _admin_app() -> typer.Typer:
         override. ``--yes`` (or passing flags) runs it non-interactively.
         """
         from agentkit.auth._openapi import OpenApiClient
-        from agentkit.auth.admin import CLI_CLIENT_NAME, OIDC_PROVIDER_NAME, ROLE_NAME, sso_setup
+        from agentkit.auth.admin import CLI_CLIENT_NAME, OIDC_PROVIDER_NAME, ROLE_NAME, sso_setup, tos_public_host
         from agentkit.auth.errors import AuthError
 
+        region = region or _default_region()
         try:
             api = OpenApiClient(region=region, expect_account=account)
         except AuthError as exc:
@@ -317,7 +329,7 @@ def _admin_app() -> typer.Typer:
 
         # 5. 列出将要做的改动,确认后执行
         if interactive:
-            host = dom or f"{bk}.tos-{region}.volces.com"
+            host = dom or f"{bk}.{tos_public_host(region)}"
             typer.secho("  将要执行以下配置:", fg=typer.colors.CYAN, bold=True, err=True)
             typer.secho(f"    • UserPool      {'复用 ' + user_pool if user_pool else '新建 (agentkit-cli-pool)'}", err=True)
             typer.secho(f"    • 上游联邦      {idp + ' 联邦登录' if idp else '不配置(用 UserPool 本地/已有登录)'}", err=True)
@@ -385,12 +397,13 @@ def _admin_app() -> typer.Typer:
         user_pool: str = typer.Option(..., "--user-pool", help="UserPool uid."),
         bucket: str = typer.Option(..., "--bucket", help="TOS bucket to host the discovery doc."),
         account: Optional[str] = typer.Option(None, "--account"),
-        region: str = typer.Option("cn-beijing", "--region"),
+        region: Optional[str] = typer.Option(None, "--region", help="Region (default: the provider's default region)."),
     ) -> None:
         """Provision (if needed) and publish /.well-known/agentkit-cli; print the login address."""
         from agentkit.auth.admin import provision_cli_access, publish_discovery
         from agentkit.auth.errors import AuthError
 
+        region = region or _default_region()
         try:
             coords = provision_cli_access(user_pool, region=region, account_id=account)
             url = publish_discovery(coords, bucket=bucket)
