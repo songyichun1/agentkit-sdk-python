@@ -41,6 +41,29 @@ class TestConfigurationEndpoints:
         assert ep.scheme == "https"
         assert ep.region == DEFAULT_REGION
 
+    def test_region_config_takes_priority_over_region_env(
+        self, clean_env, mock_global_config
+    ):
+        """Global config is used before REGION fallback."""
+        os.environ["REGION"] = "cn-guangzhou"
+        mock_global_config.update({"region": "cn-shanghai"})
+
+        config = VolcConfiguration()
+        ep = config.get_service_endpoint("agentkit")
+
+        assert config.region == "cn-shanghai"
+        assert ep.region == "cn-shanghai"
+
+    def test_region_env_alias_before_default(self, clean_env, mock_global_config):
+        """REGION is used for Volcengine before default fallback."""
+        os.environ["REGION"] = "cn-guangzhou"
+
+        config = VolcConfiguration()
+        ep = config.get_service_endpoint("agentkit")
+
+        assert config.region == "cn-guangzhou"
+        assert ep.region == "cn-guangzhou"
+
     def test_endpoint_env_override(self, clean_env, mock_global_config):
         """Test environment variables override endpoint details."""
         os.environ["VOLCENGINE_AGENTKIT_HOST"] = "custom.host"
