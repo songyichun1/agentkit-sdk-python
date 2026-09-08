@@ -25,6 +25,10 @@ from rich.table import Table
 from rich.panel import Panel
 
 from agentkit.sdk.runtime.client import AgentkitRuntimeClient
+from agentkit.sdk.runtime.gateway import (
+    normalize_runtime_gateway_mode,
+    validate_runtime_gateway_create_config,
+)
 from agentkit.sdk.runtime import types as rt
 
 console = Console()
@@ -92,6 +96,60 @@ def _build_network_for_create_runtime(
     )
 
 
+def _has_network_configuration_for_create_runtime(
+    vpc_id: Optional[str],
+    subnet_ids: Optional[str],
+    enable_private_network: bool,
+    enable_public_network: bool,
+    enable_shared_internet_access: bool,
+) -> bool:
+    return (
+        enable_private_network
+        or bool((vpc_id or "").strip())
+        or bool((subnet_ids or "").strip())
+        or enable_shared_internet_access
+        or enable_public_network is False
+    )
+
+
+def _payload_value(payload: object, *keys: str) -> object:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def _payload_has_non_null_key(payload: object, *keys: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return any(key in payload and payload[key] is not None for key in keys)
+
+
+def _unsupported_runtime_update_fields_message(payload: object) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    unsupported = [
+        "GatewayMode",
+        "GatewayInstanceId",
+        "NetworkConfiguration",
+        "gateway_mode",
+        "gateway_instance_id",
+        "network_configuration",
+        "gatewayMode",
+        "gatewayInstanceId",
+        "networkConfiguration",
+    ]
+    found = [key for key in unsupported if key in payload]
+    if not found:
+        return None
+    return (
+        f"{', '.join(found)} can only be set when creating a Runtime; "
+        "gateway mode, gateway instance, and network configuration cannot be updated."
+    )
+
+
 def _validate_runtime_create_authorizer_options(
     api_key_name: Optional[str],
     jwt_discovery_url: Optional[str],
@@ -131,6 +189,16 @@ def create_runtime_command(
     ),
     model_agent_name: Optional[str] = typer.Option(
         None, "--model-agent-name", help="Model agent name"
+    ),
+    gateway_mode: Optional[str] = typer.Option(
+        None,
+        "--gateway-mode",
+        help="Runtime gateway mode: Shared | Exclusive",
+    ),
+    gateway_instance_id: Optional[str] = typer.Option(
+        None,
+        "--gateway-instance-id",
+        help="Exclusive Runtime gateway instance ID",
     ),
     vpc_id: Optional[str] = typer.Option(None, "--vpc-id", help="VPC ID"),
     subnet_ids: Optional[str] = typer.Option(
@@ -187,11 +255,48 @@ def create_runtime_command(
     try:
         if json_body:
             payload = json.loads(json_body)
+            validate_runtime_gateway_create_config(
+                gateway_mode=_payload_value(
+                    payload,
+                    "GatewayMode",
+                    "gateway_mode",
+                    "gatewayMode",
+                ),
+                gateway_instance_id=_payload_value(
+                    payload,
+                    "GatewayInstanceId",
+                    "gateway_instance_id",
+                    "gatewayInstanceId",
+                ),
+                has_network_configuration=_payload_has_non_null_key(
+                    payload,
+                    "NetworkConfiguration",
+                    "network_configuration",
+                    "networkConfiguration",
+                ),
+                label="runtime",
+            )
             req = rt.CreateRuntimeRequest(**payload)
         else:
             _validate_runtime_create_authorizer_options(
                 api_key_name=api_key_name,
                 jwt_discovery_url=jwt_discovery_url,
+            )
+            normalized_gateway_mode = normalize_runtime_gateway_mode(
+                gateway_mode,
+                "--gateway-mode",
+            )
+            validate_runtime_gateway_create_config(
+                gateway_mode=normalized_gateway_mode,
+                gateway_instance_id=gateway_instance_id,
+                has_network_configuration=_has_network_configuration_for_create_runtime(
+                    vpc_id=vpc_id,
+                    subnet_ids=subnet_ids,
+                    enable_private_network=enable_private_network,
+                    enable_public_network=enable_public_network,
+                    enable_shared_internet_access=enable_shared_internet_access,
+                ),
+                label="runtime",
             )
 
             authorizer = None
@@ -253,6 +358,10 @@ def create_runtime_command(
                 tool_id=tool_id,
                 mcp_toolset_id=mcp_toolset_id,
                 model_agent_name=model_agent_name,
+                gateway_mode=normalized_gateway_mode,
+                gateway_instance_id=(
+                    gateway_instance_id.strip() if gateway_instance_id else None
+                ),
                 authorizer_configuration=authorizer,
                 network_configuration=network,
                 envs=envs,
@@ -343,6 +452,9 @@ def update_runtime_command(
         client = AgentkitRuntimeClient(region=(region or "").strip())
         if json_body:
             payload = json.loads(json_body)
+            unsupported = _unsupported_runtime_update_fields_message(payload)
+            if unsupported:
+                raise ValueError(unsupported)
             req = rt.UpdateRuntimeRequest(**payload)
         else:
             envs = None
@@ -466,6 +578,16 @@ def list_runtimes_command(
     # Project filter
     project_name: Optional[str] = typer.Option(
         None, "--project-name", help="Filter by project name"
+    ),
+    gateway_mode: Optional[str] = typer.Option(
+        None,
+        "--gateway-mode",
+        help="Filter by runtime gateway mode: Shared | Exclusive",
+    ),
+    gateway_instance_id: Optional[str] = typer.Option(
+        None,
+        "--gateway-instance-id",
+        help="Filter by runtime gateway instance ID",
     ),
     # Sorting options
     sort_by: Optional[str] = typer.Option(
@@ -618,6 +740,26 @@ def list_runtimes_command(
                     rt.FiltersItemForListRuntimes(name="Status", values=statuses)
                 )
 
+        if gateway_mode:
+            filters.append(
+                rt.FiltersItemForListRuntimes(
+                    name="GatewayMode",
+                    values=[
+                        normalize_runtime_gateway_mode(
+                            gateway_mode,
+                            "--gateway-mode",
+                        )
+                    ],
+                )
+            )
+        if gateway_instance_id:
+            filters.append(
+                rt.FiltersItemForListRuntimes(
+                    name="GatewayInstanceId",
+                    values=[gateway_instance_id],
+                )
+            )
+
         # Setup console with color control
         local_console = console if not no_color else Console(no_color=True)
 
@@ -696,6 +838,8 @@ def list_runtimes_command(
             ("Name", "Name", "white"),
             ("Status", "Status", "green"),
             ("ProjectName", "ProjectName", "yellow"),
+            ("GatewayMode", "GatewayMode", "cyan"),
+            ("GatewayInstanceName", "GatewayInstanceName", "blue"),
             ("UpdatedAt", "UpdatedAt", "magenta"),
         ]
 

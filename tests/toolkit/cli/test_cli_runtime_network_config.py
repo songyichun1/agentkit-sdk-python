@@ -25,6 +25,7 @@ runner = CliRunner()
 class _FakeRuntimeClient:
     instances = []
     last_request = None
+    last_list_request = None
 
     def __init__(self, **kwargs):
         self.region = kwargs.get("region", "")
@@ -33,6 +34,14 @@ class _FakeRuntimeClient:
     def create_runtime(self, request):
         _FakeRuntimeClient.last_request = request
         return SimpleNamespace(runtime_id="rt-created")
+
+    def update_runtime(self, request):
+        _FakeRuntimeClient.last_request = request
+        return SimpleNamespace(runtime_id=request.runtime_id)
+
+    def list_runtimes(self, request):
+        _FakeRuntimeClient.last_list_request = request
+        return SimpleNamespace(agent_kit_runtimes=[], next_token="")
 
 
 def _runtime_create_args(*extra_args):
@@ -57,6 +66,7 @@ def _fake_runtime_client(monkeypatch):
 
     _FakeRuntimeClient.instances = []
     _FakeRuntimeClient.last_request = None
+    _FakeRuntimeClient.last_list_request = None
     monkeypatch.setattr(cli_runtime, "AgentkitRuntimeClient", _FakeRuntimeClient)
 
 
@@ -173,6 +183,94 @@ def test_create_runtime_accepts_jwt_discovery_url_auth():
         == "https://issuer.example.com/.well-known/jwks.json"
     )
     assert authorizer.custom_jwt_authorizer.allowed_clients == ["client-a", "client-b"]
+
+
+def test_create_runtime_accepts_exclusive_gateway():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        _runtime_create_args(
+            "--apikey-name",
+            "demo-key",
+            "--gateway-mode",
+            "exclusive",
+            "--gateway-instance-id",
+            "g-123",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert _FakeRuntimeClient.last_request.gateway_mode == "Exclusive"
+    assert _FakeRuntimeClient.last_request.gateway_instance_id == "g-123"
+
+
+def test_create_runtime_rejects_exclusive_gateway_with_network_before_client_init():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        _runtime_create_args(
+            "--apikey-name",
+            "demo-key",
+            "--gateway-mode",
+            "Exclusive",
+            "--gateway-instance-id",
+            "g-123",
+            "--vpc-id",
+            "vpc-123",
+        ),
+    )
+
+    assert result.exit_code == 1
+    assert "runtime.network cannot be used" in result.output
+    assert _FakeRuntimeClient.instances == []
+    assert _FakeRuntimeClient.last_request is None
+
+
+def test_update_runtime_rejects_gateway_fields_in_json():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        [
+            "runtime",
+            "update",
+            "--runtime-id",
+            "rt-1",
+            "--json",
+            '{"GatewayMode":"Exclusive"}',
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "can only be set when creating a Runtime" in result.output
+    assert _FakeRuntimeClient.last_request is None
+
+
+def test_list_runtime_accepts_gateway_filters():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        [
+            "runtime",
+            "list",
+            "--gateway-mode",
+            "exclusive",
+            "--gateway-instance-id",
+            "g-123",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    filters = _FakeRuntimeClient.last_list_request.filters
+    assert [(f.name, f.values) for f in filters] == [
+        ("GatewayMode", ["Exclusive"]),
+        ("GatewayInstanceId", ["g-123"]),
+    ]
 
 
 def test_build_network_none_when_no_user_intent():

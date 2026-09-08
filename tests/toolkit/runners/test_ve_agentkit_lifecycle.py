@@ -46,6 +46,9 @@ def _make_runtime(
     api_key=None,
     public_endpoint="https://public.example/",
     failed_log_file_url=None,
+    gateway_mode=None,
+    gateway_instance_id=None,
+    gateway_instance_name=None,
 ):
     """Build a real GetRuntimeResponse pydantic object matching the API shape."""
     authorizer = None
@@ -69,6 +72,9 @@ def _make_runtime(
         AuthorizerConfiguration=authorizer,
         NetworkConfigurations=net,
         FailedLogFileUrl=failed_log_file_url,
+        GatewayMode=gateway_mode,
+        GatewayInstanceId=gateway_instance_id,
+        GatewayInstanceName=gateway_instance_name,
     )
 
 
@@ -302,6 +308,58 @@ def test_create_new_runtime_custom_jwt_does_not_fetch_api_key(monkeypatch):
     assert result.success is True
     # custom_jwt path leaves runtime_apikey untouched (stays default empty string)
     assert cfg.runtime_apikey == ""
+
+
+def test_create_new_runtime_passes_exclusive_gateway_settings(monkeypatch):
+    runner = VeAgentkitRuntimeRunner()
+    ready = _make_runtime(
+        runtime_id="rt-gateway",
+        gateway_mode="Exclusive",
+        gateway_instance_id="g-123",
+    )
+    client = _FakeRuntimeClient(
+        create_response=runtime_types.CreateRuntimeResponse(RuntimeId="rt-gateway"),
+        get_runtime_responses=[ready],
+    )
+    _install_client(monkeypatch, runner, client)
+
+    cfg = _make_config(
+        runtime_gateway_mode="exclusive",
+        runtime_gateway_instance_id="g-123",
+    )
+    result = runner._create_new_runtime(cfg)
+
+    assert result.success is True
+    req = client.create_calls[0]
+    assert req.gateway_mode == "Exclusive"
+    assert req.gateway_instance_id == "g-123"
+    assert result.metadata["runtime_gateway_mode"] == "Exclusive"
+    assert result.metadata["runtime_gateway_instance_id"] == "g-123"
+
+
+def test_create_new_runtime_rejects_invalid_exclusive_gateway_settings(monkeypatch):
+    runner = VeAgentkitRuntimeRunner()
+    client = _FakeRuntimeClient(
+        create_response=runtime_types.CreateRuntimeResponse(RuntimeId="unused"),
+        get_runtime_responses=[],
+    )
+    _install_client(monkeypatch, runner, client)
+
+    missing_id = _make_config(runtime_gateway_mode="Exclusive")
+    result = runner._create_new_runtime(missing_id)
+    assert result.success is False
+    assert "gateway_instance_id is required" in result.error
+
+    with_network = _make_config(
+        runtime_gateway_mode="Exclusive",
+        runtime_gateway_instance_id="g-123",
+        runtime_network={"mode": "public"},
+    )
+    result = runner._create_new_runtime(with_network)
+    assert result.success is False
+    assert "runtime.network cannot be used" in result.error
+
+    assert client.create_calls == []
 
 
 def test_create_new_runtime_init_failure_downloads_logs_and_cleans_up_when_confirmed(
@@ -605,6 +663,29 @@ def test_update_existing_runtime_direct_to_ready_submits_update_and_skips_releas
     assert result.metadata["message"] == "Runtime update completed"
     # key_auth mode pulls apikey from the updated runtime.
     assert cfg.runtime_apikey == "k-updated"
+
+
+def test_update_existing_runtime_rejects_gateway_binding_change(monkeypatch):
+    runner = VeAgentkitRuntimeRunner()
+    existing = _make_runtime(
+        runtime_id="r-up",
+        status=RUNTIME_STATUS_READY,
+        gateway_mode="Shared",
+    )
+    client = _FakeRuntimeClient(get_runtime_responses=[existing])
+    _install_client(monkeypatch, runner, client)
+
+    cfg = _make_config(
+        runtime_id="r-up",
+        runtime_gateway_mode="Exclusive",
+        runtime_gateway_instance_id="g-123",
+    )
+    result = runner._update_existing_runtime(cfg)
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.CONFIG_INVALID
+    assert "cannot be changed after creation" in result.error
+    assert client.update_calls == []
 
 
 def test_update_existing_runtime_unreleased_triggers_release_then_ready(monkeypatch):

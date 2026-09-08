@@ -192,6 +192,18 @@ def config_command(
         "--runtime_binding_mcp_toolset_id",
         help="Bind Runtime to an MCP Toolset ID (cloud/hybrid only)",
     ),
+    runtime_gateway_mode: Optional[str] = typer.Option(
+        None,
+        "--runtime_gateway_mode",
+        "--runtime-gateway-mode",
+        help="Runtime gateway mode (cloud/hybrid, CreateRuntime only): Shared|Exclusive",
+    ),
+    runtime_gateway_instance_id: Optional[str] = typer.Option(
+        None,
+        "--runtime_gateway_instance_id",
+        "--runtime-gateway-instance-id",
+        help="Exclusive Runtime gateway instance ID (cloud/hybrid, CreateRuntime only)",
+    ),
     # Runtime network configuration (advanced, CreateRuntime only)
     runtime_network_mode: Optional[str] = typer.Option(
         None,
@@ -344,6 +356,8 @@ def config_command(
             runtime_vpc_id=runtime_vpc_id,
             runtime_subnet_ids=runtime_subnet_ids,
             runtime_enable_shared_internet_access=runtime_enable_shared_internet_access,
+            runtime_gateway_mode=runtime_gateway_mode,
+            runtime_gateway_instance_id=runtime_gateway_instance_id,
         )
 
         has_cli_params = ConfigParamHandler.has_cli_params(cli_params)

@@ -52,10 +52,14 @@ def test_collect_cli_params_accepts_cloud_provider_and_project_name() -> None:
         runtime_vpc_id=None,
         runtime_subnet_ids=None,
         runtime_enable_shared_internet_access=None,
+        runtime_gateway_mode="exclusive",
+        runtime_gateway_instance_id="g-1",
     )
 
     assert params["common"]["cloud_provider"] == "byteplus"
     assert params["strategy"]["project_name"] == "lh-test"
+    assert params["strategy"]["runtime_gateway_mode"] == "Exclusive"
+    assert params["strategy"]["runtime_gateway_instance_id"] == "g-1"
 
 
 def test_noninteractive_config_updates_project_cloud_provider(tmp_path) -> None:

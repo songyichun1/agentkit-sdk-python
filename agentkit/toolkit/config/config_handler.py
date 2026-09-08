@@ -21,6 +21,7 @@ from rich import box
 
 from agentkit.toolkit.config.config import get_config
 from agentkit.toolkit.config.config_validator import ConfigValidator
+from agentkit.sdk.runtime.gateway import normalize_runtime_gateway_mode
 
 console = Console()
 
@@ -113,6 +114,8 @@ class ConfigParamHandler:
         runtime_vpc_id: Optional[str],
         runtime_subnet_ids: Optional[List[str]],
         runtime_enable_shared_internet_access: Optional[bool],
+        runtime_gateway_mode: Optional[str] = None,
+        runtime_gateway_instance_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Collect all CLI parameters.
 
@@ -200,6 +203,17 @@ class ConfigParamHandler:
             runtime_bindings["mcp_toolset_id"] = mcp_toolset_id
         if runtime_bindings:
             strategy_params["runtime_bindings"] = runtime_bindings
+
+        if runtime_gateway_mode is not None:
+            strategy_params["runtime_gateway_mode"] = (
+                normalize_runtime_gateway_mode(
+                    runtime_gateway_mode,
+                    "runtime_gateway_mode",
+                )
+                or ""
+            )
+        if runtime_gateway_instance_id is not None:
+            strategy_params["runtime_gateway_instance_id"] = runtime_gateway_instance_id
 
         # Runtime network configuration (advanced, CreateRuntime only)
         runtime_network: Dict[str, Any] = {}

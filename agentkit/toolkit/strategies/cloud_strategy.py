@@ -185,6 +185,16 @@ class CloudStrategy(Strategy):
                     config_updates.add(
                         "runtime_role_name", result.metadata["runtime_role_name"]
                     )
+                if result.metadata.get("runtime_gateway_mode"):
+                    config_updates.add(
+                        "runtime_gateway_mode",
+                        result.metadata["runtime_gateway_mode"],
+                    )
+                if result.metadata.get("runtime_gateway_instance_id"):
+                    config_updates.add(
+                        "runtime_gateway_instance_id",
+                        result.metadata["runtime_gateway_instance_id"],
+                    )
 
         result.config_updates = config_updates if config_updates.has_updates() else None
         return result
@@ -352,6 +362,10 @@ class CloudStrategy(Strategy):
             runtime_envs=merged_envs,
             runtime_bindings=getattr(strategy_config, "runtime_bindings", None) or {},
             runtime_network=getattr(strategy_config, "runtime_network", None) or {},
+            runtime_gateway_mode=getattr(strategy_config, "runtime_gateway_mode", ""),
+            runtime_gateway_instance_id=getattr(
+                strategy_config, "runtime_gateway_instance_id", ""
+            ),
             runtime_auth_type=strategy_config.runtime_auth_type,
             runtime_jwt_discovery_url=strategy_config.runtime_jwt_discovery_url,
             runtime_jwt_allowed_clients=strategy_config.runtime_jwt_allowed_clients,
