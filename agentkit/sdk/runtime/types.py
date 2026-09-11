@@ -40,6 +40,11 @@ class AgentKitRuntimeVersionsForListRuntimeVersions(RuntimeTypeBaseModel):
     created_at: Optional[str] = Field(default=None, alias="CreatedAt")
     description: Optional[str] = Field(default=None, alias="Description")
     envs: Optional[list[EnvsForListRuntimeVersions]] = Field(default=None, alias="Envs")
+    gateway_instance_id: Optional[str] = Field(default=None, alias="GatewayInstanceId")
+    gateway_instance_name: Optional[str] = Field(
+        default=None, alias="GatewayInstanceName"
+    )
+    gateway_mode: Optional[str] = Field(default=None, alias="GatewayMode")
     memory_mb: Optional[int] = Field(default=None, alias="MemoryMb")
     role_name: Optional[str] = Field(default=None, alias="RoleName")
     runtime_id: Optional[str] = Field(default=None, alias="RuntimeId")
@@ -63,6 +68,11 @@ class AgentKitRuntimesForListRuntimes(RuntimeTypeBaseModel):
     )
     description: Optional[str] = Field(default=None, alias="Description")
     envs: Optional[list[EnvsForListRuntimes]] = Field(default=None, alias="Envs")
+    gateway_instance_id: Optional[str] = Field(default=None, alias="GatewayInstanceId")
+    gateway_instance_name: Optional[str] = Field(
+        default=None, alias="GatewayInstanceName"
+    )
+    gateway_mode: Optional[str] = Field(default=None, alias="GatewayMode")
     knowledge_id: Optional[str] = Field(default=None, alias="KnowledgeId")
     mcp_toolset_id: Optional[str] = Field(default=None, alias="MCPToolsetId")
     memory_id: Optional[str] = Field(default=None, alias="MemoryId")
@@ -326,6 +336,8 @@ class CreateRuntimeRequest(RuntimeTypeBaseModel):
     client_token: Optional[str] = Field(default=None, alias="ClientToken")
     cpu_milli: Optional[int] = Field(default=None, alias="CpuMilli")
     description: Optional[str] = Field(default=None, alias="Description")
+    gateway_instance_id: Optional[str] = Field(default=None, alias="GatewayInstanceId")
+    gateway_mode: Optional[str] = Field(default=None, alias="GatewayMode")
     knowledge_id: Optional[str] = Field(default=None, alias="KnowledgeId")
     mcp_toolset_id: Optional[str] = Field(default=None, alias="MCPToolsetId")
     max_concurrency: Optional[int] = Field(default=None, alias="MaxConcurrency")
@@ -388,6 +400,11 @@ class GetRuntimeResponse(RuntimeTypeBaseModel):
     description: Optional[str] = Field(default=None, alias="Description")
     envs: Optional[list[EnvsForGetRuntime]] = Field(default=None, alias="Envs")
     failed_log_file_url: Optional[str] = Field(default=None, alias="FailedLogFileUrl")
+    gateway_instance_id: Optional[str] = Field(default=None, alias="GatewayInstanceId")
+    gateway_instance_name: Optional[str] = Field(
+        default=None, alias="GatewayInstanceName"
+    )
+    gateway_mode: Optional[str] = Field(default=None, alias="GatewayMode")
     knowledge_id: Optional[str] = Field(default=None, alias="KnowledgeId")
     mcp_toolset_id: Optional[str] = Field(default=None, alias="MCPToolsetId")
     max_concurrency: Optional[int] = Field(default=None, alias="MaxConcurrency")
@@ -455,6 +472,11 @@ class GetRuntimeVersionResponse(RuntimeTypeBaseModel):
     description: Optional[str] = Field(default=None, alias="Description")
     endpoint: Optional[str] = Field(default=None, alias="Endpoint")
     envs: Optional[list[EnvsForGetRuntimeVersion]] = Field(default=None, alias="Envs")
+    gateway_instance_id: Optional[str] = Field(default=None, alias="GatewayInstanceId")
+    gateway_instance_name: Optional[str] = Field(
+        default=None, alias="GatewayInstanceName"
+    )
+    gateway_mode: Optional[str] = Field(default=None, alias="GatewayMode")
     max_concurrency: Optional[int] = Field(default=None, alias="MaxConcurrency")
     memory_mb: Optional[int] = Field(default=None, alias="MemoryMb")
     model_agent_name: Optional[str] = Field(default=None, alias="ModelAgentName")

@@ -43,6 +43,11 @@ from agentkit.utils.misc import (
     retry,
 )
 from agentkit.sdk.runtime.client import AgentkitRuntimeClient
+from agentkit.sdk.runtime.gateway import (
+    normalize_runtime_gateway_mode,
+    runtime_gateway_binding_changed,
+    validate_runtime_gateway_create_config,
+)
 from agentkit.toolkit.volcengine.iam import VeIAM
 from .base import Runner
 
@@ -109,6 +114,14 @@ class VeAgentkitRunnerConfig(AutoSerializableMixin):
         metadata={
             "description": "Runtime network configuration (advanced, CreateRuntime only)",
         },
+    )
+    runtime_gateway_mode: str = field(
+        default="",
+        metadata={"description": "Runtime gateway mode: Shared or Exclusive"},
+    )
+    runtime_gateway_instance_id: str = field(
+        default="",
+        metadata={"description": "Exclusive Runtime gateway instance ID"},
     )
 
     # Authentication configuration
@@ -754,6 +767,36 @@ class VeAgentkitRuntimeRunner(Runner):
             enable_public_network=enable_public,
         )
 
+    @staticmethod
+    def _validate_runtime_gateway_config_for_create(
+        config: VeAgentkitRunnerConfig,
+    ) -> None:
+        validate_runtime_gateway_create_config(
+            gateway_mode=config.runtime_gateway_mode,
+            gateway_instance_id=config.runtime_gateway_instance_id,
+            has_network_configuration=bool(config.runtime_network),
+            label="runtime",
+        )
+
+    @staticmethod
+    def _assert_runtime_gateway_update_allowed(
+        config: VeAgentkitRunnerConfig,
+        current: Optional[runtime_types.GetRuntimeResponse],
+    ) -> None:
+        if current is None:
+            return
+        if not runtime_gateway_binding_changed(
+            desired_mode=config.runtime_gateway_mode,
+            desired_instance_id=config.runtime_gateway_instance_id,
+            current_mode=getattr(current, "gateway_mode", None),
+            current_instance_id=getattr(current, "gateway_instance_id", None),
+        ):
+            return
+        raise ConfigError(
+            "Runtime gateway_mode/gateway_instance_id cannot be changed after creation. "
+            "Delete and recreate the Runtime, or set runtime_id to Auto to create a new Runtime."
+        )
+
     def _create_new_runtime(self, config: VeAgentkitRunnerConfig) -> DeployResult:
         """Create a new Runtime instance.
 
@@ -787,8 +830,11 @@ class VeAgentkitRuntimeRunner(Runner):
             # Build authorizer configuration based on auth type
             authorizer_config = self._build_authorizer_config_for_create(config)
 
+            self._validate_runtime_gateway_config_for_create(config)
+
             # Network configuration is only supported during CreateRuntime.
             network_configuration = self._build_network_config_for_create(config)
+            gateway_mode = normalize_runtime_gateway_mode(config.runtime_gateway_mode)
 
             create_request = runtime_types.CreateRuntimeRequest(
                 name=config.runtime_name,
@@ -798,6 +844,12 @@ class VeAgentkitRuntimeRunner(Runner):
                 artifact_type=ARTIFACT_TYPE_DOCKER_IMAGE,
                 artifact_url=config.image_url,
                 role_name=config.runtime_role_name,
+                gateway_mode=gateway_mode,
+                gateway_instance_id=(
+                    config.runtime_gateway_instance_id.strip()
+                    if config.runtime_gateway_instance_id
+                    else None
+                ),
                 memory_id=(memory_id if is_valid_config(memory_id) else None),
                 knowledge_id=(knowledge_id if is_valid_config(knowledge_id) else None),
                 tool_id=(tool_id if is_valid_config(tool_id) else None),
@@ -899,6 +951,8 @@ class VeAgentkitRuntimeRunner(Runner):
                     "runtime_apikey": config.runtime_apikey,
                     "runtime_apikey_name": config.runtime_apikey_name,
                     "runtime_role_name": config.runtime_role_name,
+                    "runtime_gateway_mode": gateway_mode or "",
+                    "runtime_gateway_instance_id": config.runtime_gateway_instance_id,
                     "runtime_auth_type": config.runtime_auth_type,
                     "runtime_jwt_discovery_url": config.runtime_jwt_discovery_url,
                     "runtime_jwt_allowed_clients": config.runtime_jwt_allowed_clients,
@@ -1188,6 +1242,8 @@ class VeAgentkitRuntimeRunner(Runner):
                     success=False, error=error_msg, error_code=ErrorCode.CONFIG_INVALID
                 )
 
+            self._assert_runtime_gateway_update_allowed(config, runtime)
+
             # Check if update is needed
             # needs_update, update_reason = self._needs_runtime_update(runtime, config)
             needs_update = True  # Always update for now
@@ -1220,6 +1276,12 @@ class VeAgentkitRuntimeRunner(Runner):
                         "runtime_name": config.runtime_name,
                         "runtime_apikey": config.runtime_apikey,
                         "runtime_auth_type": config.runtime_auth_type,
+                        "runtime_gateway_mode": getattr(runtime, "gateway_mode", None)
+                        or "",
+                        "runtime_gateway_instance_id": getattr(
+                            runtime, "gateway_instance_id", None
+                        )
+                        or "",
                         "message": "Runtime configuration is up-to-date",
                     },
                 )
@@ -1369,6 +1431,12 @@ class VeAgentkitRuntimeRunner(Runner):
                     "runtime_apikey": config.runtime_apikey,
                     "runtime_apikey_name": config.runtime_apikey_name,
                     "runtime_role_name": config.runtime_role_name,
+                    "runtime_gateway_mode": getattr(updated_runtime, "gateway_mode", None)
+                    or config.runtime_gateway_mode,
+                    "runtime_gateway_instance_id": getattr(
+                        updated_runtime, "gateway_instance_id", None
+                    )
+                    or config.runtime_gateway_instance_id,
                     "runtime_auth_type": config.runtime_auth_type,
                     "runtime_jwt_discovery_url": config.runtime_jwt_discovery_url,
                     "runtime_jwt_allowed_clients": config.runtime_jwt_allowed_clients,

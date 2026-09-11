@@ -14,6 +14,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from agentkit.sdk.runtime.gateway import normalize_runtime_gateway_mode
 from .dataclass_utils import AutoSerializableMixin
 from .constants import (
     AUTH_TYPE_CUSTOM_JWT,
@@ -344,6 +345,32 @@ class HybridStrategyConfig(AutoSerializableMixin):
             "examples": "{mode: private, vpc_id: vpc-xxx, subnet_ids: [subnet-aaa, subnet-bbb], enable_shared_internet_access: true}",
         },
     )
+    runtime_gateway_mode: str = field(
+        default="",
+        metadata={
+            "hidden": True,
+            "description": "Runtime gateway mode: Shared or Exclusive",
+            "examples": "Exclusive",
+        },
+    )
+    runtime_gateway_instance_id: str = field(
+        default="",
+        metadata={
+            "hidden": True,
+            "description": "Exclusive Runtime gateway instance ID",
+            "examples": "g-xxx",
+        },
+    )
+
+    def __post_init__(self):
+        self.runtime_gateway_mode = (
+            normalize_runtime_gateway_mode(
+                self.runtime_gateway_mode,
+                "runtime_gateway_mode",
+            )
+            or ""
+        )
+
     _config_metadata = {
         "name": "Hybrid Strategy Configuration",
         "welcome_message": "Welcome to AgentKit Hybrid Deployment Mode Configuration Wizard",
@@ -611,6 +638,31 @@ class CloudStrategyConfig(AutoSerializableMixin):
             "examples": "{mode: private, vpc_id: vpc-xxx, subnet_ids: [subnet-aaa, subnet-bbb], enable_shared_internet_access: true}",
         },
     )
+    runtime_gateway_mode: str = field(
+        default="",
+        metadata={
+            "hidden": True,
+            "description": "Runtime gateway mode: Shared or Exclusive",
+            "examples": "Exclusive",
+        },
+    )
+    runtime_gateway_instance_id: str = field(
+        default="",
+        metadata={
+            "hidden": True,
+            "description": "Exclusive Runtime gateway instance ID",
+            "examples": "g-xxx",
+        },
+    )
+
+    def __post_init__(self):
+        self.runtime_gateway_mode = (
+            normalize_runtime_gateway_mode(
+                self.runtime_gateway_mode,
+                "runtime_gateway_mode",
+            )
+            or ""
+        )
 
     # Deployment metadata
     build_timestamp: str = field(
