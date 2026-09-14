@@ -34,6 +34,10 @@ from agentkit.sdk.tools.types import (
     GetSessionResponse,
     ListSessionsRequest,
     ListSessionsResponse,
+    PauseSessionRequest,
+    PauseSessionResponse,
+    ResumeSessionRequest,
+    ResumeSessionResponse,
 )
 
 SANDBOX_APIG_ENDPOINT_ENV = "SANDBOX_APIG_ENDPOINT"
@@ -232,6 +236,20 @@ class TipAgentkitToolsClient(_OpenapiAgentkitToolsClient):
             api_action="DeleteSession",
             request=request,
             response_type=DeleteSessionResponse,
+        )
+
+    def pause_session(self, request: PauseSessionRequest) -> PauseSessionResponse:
+        return self._invoke_tip_api(
+            api_action="PauseSession",
+            request=request,
+            response_type=PauseSessionResponse,
+        )
+
+    def resume_session(self, request: ResumeSessionRequest) -> ResumeSessionResponse:
+        return self._invoke_tip_api(
+            api_action="ResumeSession",
+            request=request,
+            response_type=ResumeSessionResponse,
         )
 
     def _raise_tip_unsupported(self, api_action: str) -> None:

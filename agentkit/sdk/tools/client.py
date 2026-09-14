@@ -46,6 +46,10 @@ from .types import (
     ListSessionsResponse,
     ListToolsRequest,
     ListToolsResponse,
+    PauseSessionRequest,
+    PauseSessionResponse,
+    ResumeSessionRequest,
+    ResumeSessionResponse,
     ResumeSessionFromSnapshotRequest,
     ResumeSessionFromSnapshotResponse,
     SetSessionTtlRequest,
@@ -72,6 +76,8 @@ class AgentkitToolsClient(BaseAgentkitClient):
         "ListSessionSnapshots": "ListSessionSnapshots",
         "ListSessions": "ListSessions",
         "ListTools": "ListTools",
+        "PauseSession": "PauseSession",
+        "ResumeSession": "ResumeSession",
         "ResumeSessionFromSnapshot": "ResumeSessionFromSnapshot",
         "SetSessionTtl": "SetSessionTtl",
         "UpdateTool": "UpdateTool",
@@ -191,6 +197,20 @@ class AgentkitToolsClient(BaseAgentkitClient):
             api_action="ListTools",
             request=request,
             response_type=ListToolsResponse,
+        )
+
+    def pause_session(self, request: PauseSessionRequest) -> PauseSessionResponse:
+        return self._invoke_api(
+            api_action="PauseSession",
+            request=request,
+            response_type=PauseSessionResponse,
+        )
+
+    def resume_session(self, request: ResumeSessionRequest) -> ResumeSessionResponse:
+        return self._invoke_api(
+            api_action="ResumeSession",
+            request=request,
+            response_type=ResumeSessionResponse,
         )
 
     def resume_session_from_snapshot(

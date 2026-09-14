@@ -138,6 +138,51 @@ def test_tip_client_delete_session_uses_apig_endpoint_and_bearer_token(
     }
 
 
+def test_tip_client_pause_and_resume_session_use_apig_endpoint(monkeypatch):
+    import agentkit.toolkit.cli.sandbox.agentkit_client as agentkit_client
+
+    fake_session = _FakeTipSession()
+    monkeypatch.setenv("SANDBOX_APIG_ENDPOINT", "https://apig.example.com/sandbox")
+    monkeypatch.setenv("TIP_TOKEN", "tip-token")
+    monkeypatch.setattr(
+        agentkit_client.requests,
+        "Session",
+        lambda: fake_session,
+    )
+
+    client = agentkit_client.TipAgentkitToolsClient()
+    client.pause_session(
+        tools_types.PauseSessionRequest(
+            tool_id="tool-1",
+            session_id="instance-1",
+        )
+    )
+    client.resume_session(
+        tools_types.ResumeSessionRequest(
+            tool_id="tool-1",
+            session_id="instance-1",
+            ttl=30,
+            ttl_unit="minute",
+        )
+    )
+
+    pause_call, resume_call = fake_session.calls
+    assert parse_qs(urlsplit(pause_call["url"]).query)["Action"] == ["PauseSession"]
+    assert pause_call["json"] == {
+        "SessionId": "instance-1",
+        "ToolId": "tool-1",
+    }
+    assert parse_qs(urlsplit(resume_call["url"]).query)["Action"] == [
+        "ResumeSession"
+    ]
+    assert resume_call["json"] == {
+        "SessionId": "instance-1",
+        "ToolId": "tool-1",
+        "Ttl": 30,
+        "TtlUnit": "minute",
+    }
+
+
 def test_tip_create_session_skips_get_tool_for_tos_mount_resolution():
     import agentkit.toolkit.cli.sandbox.session_create as session_create
 

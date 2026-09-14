@@ -108,6 +108,11 @@ def create_tool_command(
         None, "--project-name", help="Project name"
     ),
     role_name: Optional[str] = typer.Option(None, "--role-name", help="Role name"),
+    enable_mcp: Optional[bool] = typer.Option(
+        None,
+        "--enable-mcp/--disable-mcp",
+        help="Enable AgentGateway MCP capability for the tool.",
+    ),
     api_key_name: Optional[str] = typer.Option(
         None, "--apikey-name", help="API key name"
     ),
@@ -234,6 +239,7 @@ def create_tool_command(
                 description=description,
                 project_name=project_name,
                 role_name=role_name,
+                enable_mcp=enable_mcp,
                 authorizer_configuration=authorizer,
                 network_configuration=network,
                 tags=tags_list or None,
@@ -306,6 +312,11 @@ def update_tool_command(
     description: Optional[str] = typer.Option(
         None, "--description", help="Description"
     ),
+    enable_mcp: Optional[bool] = typer.Option(
+        None,
+        "--enable-mcp/--disable-mcp",
+        help="Enable or disable AgentGateway MCP capability (KeyAuth tools only).",
+    ),
     json_body: Optional[str] = typer.Option(
         None, "--json", help="Full JSON body for UpdateTool"
     ),
@@ -324,7 +335,7 @@ def update_tool_command(
         ),
     ),
 ):
-    """Update tool description."""
+    """Update a tool."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
         if json_body:
@@ -335,7 +346,9 @@ def update_tool_command(
             payload["ToolId"] = tool_id.strip()
         else:
             payload = tools_types.UpdateToolRequest(
-                tool_id=tool_id, description=description
+                tool_id=tool_id,
+                description=description,
+                enable_mcp=enable_mcp,
             ).model_dump(by_alias=True, exclude_none=True)
 
         if print_json:

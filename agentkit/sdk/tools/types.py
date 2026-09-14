@@ -133,14 +133,31 @@ class SessionMetaForListSessions(ToolsBaseModel):
     webshell_url: Optional[str] = Field(default=None, alias="WebshellUrl")
 
 
+class SessionMetadataForGetSessionSnapshot(ToolsBaseModel):
+    key: Optional[str] = Field(default=None, alias="Key")
+    type: Optional[str] = Field(default=None, alias="Type")
+    value: Optional[str] = Field(default=None, alias="Value")
+
+
+class SessionMetadataForListSessionSnapshots(ToolsBaseModel):
+    key: Optional[str] = Field(default=None, alias="Key")
+    type: Optional[str] = Field(default=None, alias="Type")
+    value: Optional[str] = Field(default=None, alias="Value")
+
+
 class SnapshotForGetSessionSnapshot(ToolsBaseModel):
     created_at: Optional[str] = Field(default=None, alias="CreatedAt")
     reason: Optional[str] = Field(default=None, alias="Reason")
     sandbox_id: Optional[str] = Field(default=None, alias="SandboxId")
     session_id: Optional[str] = Field(default=None, alias="SessionId")
+    session_metadata: Optional[list[SessionMetadataForGetSessionSnapshot]] = Field(
+        default=None, alias="SessionMetadata"
+    )
     snapshot_id: Optional[str] = Field(default=None, alias="SnapshotId")
+    snapshot_type: Optional[str] = Field(default=None, alias="SnapshotType")
     status: Optional[str] = Field(default=None, alias="Status")
     tool_id: Optional[str] = Field(default=None, alias="ToolId")
+    user_session_id: Optional[str] = Field(default=None, alias="UserSessionId")
 
 
 class SnapshotsForListSessionSnapshots(ToolsBaseModel):
@@ -148,7 +165,11 @@ class SnapshotsForListSessionSnapshots(ToolsBaseModel):
     reason: Optional[str] = Field(default=None, alias="Reason")
     sandbox_id: Optional[str] = Field(default=None, alias="SandboxId")
     session_id: Optional[str] = Field(default=None, alias="SessionId")
+    session_metadata: Optional[list[SessionMetadataForListSessionSnapshots]] = Field(
+        default=None, alias="SessionMetadata"
+    )
     snapshot_id: Optional[str] = Field(default=None, alias="SnapshotId")
+    snapshot_type: Optional[str] = Field(default=None, alias="SnapshotType")
     status: Optional[str] = Field(default=None, alias="Status")
     tool_id: Optional[str] = Field(default=None, alias="ToolId")
     user_session_id: Optional[str] = Field(default=None, alias="UserSessionId")
@@ -186,6 +207,7 @@ class ToolsForListTools(ToolsBaseModel):
     command: Optional[str] = Field(default=None, alias="Command")
     created_at: Optional[str] = Field(default=None, alias="CreatedAt")
     description: Optional[str] = Field(default=None, alias="Description")
+    enable_mcp: Optional[bool] = Field(default=None, alias="EnableMcp")
     envs: Optional[list[EnvsForListTools]] = Field(default=None, alias="Envs")
     image_url: Optional[str] = Field(default=None, alias="ImageUrl")
     model_agent_name: Optional[str] = Field(default=None, alias="ModelAgentName")
@@ -293,6 +315,7 @@ class CreateSessionResponse(ToolsBaseModel):
 
 # CreateSessionSnapshot - Request
 class CreateSessionSnapshotRequest(ToolsBaseModel):
+    retention_count: Optional[int] = Field(default=None, alias="RetentionCount")
     session_id: str = Field(..., alias="SessionId")
     tool_id: str = Field(..., alias="ToolId")
 
@@ -396,6 +419,7 @@ class CreateToolRequest(ToolsBaseModel):
     command: Optional[str] = Field(default=None, alias="Command")
     cpu_milli: Optional[int] = Field(default=None, alias="CpuMilli")
     description: Optional[str] = Field(default=None, alias="Description")
+    enable_mcp: Optional[bool] = Field(default=None, alias="EnableMcp")
     enable_object_set_isolation: Optional[bool] = Field(
         default=None, alias="EnableObjectSetIsolation"
     )
@@ -533,6 +557,7 @@ class GetToolResponse(ToolsBaseModel):
     cpu_milli: Optional[int] = Field(default=None, alias="CpuMilli")
     created_at: Optional[str] = Field(default=None, alias="CreatedAt")
     description: Optional[str] = Field(default=None, alias="Description")
+    enable_mcp: Optional[bool] = Field(default=None, alias="EnableMcp")
     enable_object_set_isolation: Optional[bool] = Field(
         default=None, alias="EnableObjectSetIsolation"
     )
@@ -576,6 +601,7 @@ class ListSessionSnapshotsRequest(ToolsBaseModel):
     page_number: Optional[int] = Field(default=None, alias="PageNumber")
     page_size: Optional[int] = Field(default=None, alias="PageSize")
     session_id: Optional[str] = Field(default=None, alias="SessionId")
+    snapshot_type: Optional[str] = Field(default=None, alias="SnapshotType")
     tool_id: str = Field(..., alias="ToolId")
     user_session_id: Optional[str] = Field(default=None, alias="UserSessionId")
 
@@ -657,6 +683,33 @@ class ListToolsResponse(ToolsBaseModel):
     tools: Optional[list[ToolsForListTools]] = Field(default=None, alias="Tools")
 
 
+# PauseSession - Request
+class PauseSessionRequest(ToolsBaseModel):
+    session_id: str = Field(..., alias="SessionId")
+    tool_id: str = Field(..., alias="ToolId")
+
+
+# PauseSession - Response
+class PauseSessionResponse(ToolsBaseModel):
+    session_id: Optional[str] = Field(default=None, alias="SessionId")
+    status: Optional[str] = Field(default=None, alias="Status")
+
+
+# ResumeSession - Request
+class ResumeSessionRequest(ToolsBaseModel):
+    session_id: str = Field(..., alias="SessionId")
+    tool_id: str = Field(..., alias="ToolId")
+    ttl: Optional[int] = Field(default=None, alias="Ttl")
+    ttl_unit: Optional[str] = Field(default=None, alias="TtlUnit")
+
+
+# ResumeSession - Response
+class ResumeSessionResponse(ToolsBaseModel):
+    expire_at: Optional[str] = Field(default=None, alias="ExpireAt")
+    session_id: Optional[str] = Field(default=None, alias="SessionId")
+    status: Optional[str] = Field(default=None, alias="Status")
+
+
 # ResumeSessionFromSnapshot - Request
 class ResumeSessionFromSnapshotRequest(ToolsBaseModel):
     create_new_instance: Optional[bool] = Field(default=None, alias="CreateNewInstance")
@@ -722,6 +775,7 @@ class UpdateToolRequest(ToolsBaseModel):
     command: Optional[str] = Field(default=None, alias="Command")
     cpu_milli: Optional[int] = Field(default=None, alias="CpuMilli")
     description: Optional[str] = Field(default=None, alias="Description")
+    enable_mcp: Optional[bool] = Field(default=None, alias="EnableMcp")
     image_url: Optional[str] = Field(default=None, alias="ImageUrl")
     lark_app_id: Optional[str] = Field(default=None, alias="LarkAppId")
     lark_app_secret: Optional[str] = Field(default=None, alias="LarkAppSecret")
