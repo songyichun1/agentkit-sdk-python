@@ -28,9 +28,76 @@ class _FakeToolsClient:
     def __init__(self, **_kwargs):
         pass
 
+    def create_tool(self, request):
+        _FakeToolsClient.last_request = request
+        return SimpleNamespace(tool_id="tool-created")
+
     def update_tool(self, request):
         _FakeToolsClient.last_request = request
         return SimpleNamespace(tool_id=request.tool_id)
+
+
+def test_tools_create_can_enable_mcp(monkeypatch) -> None:
+    from agentkit.toolkit.cli import cli_tools
+    from agentkit.toolkit.cli.cli import app
+
+    _FakeToolsClient.last_request = None
+    monkeypatch.setattr(cli_tools, "AgentkitToolsClient", _FakeToolsClient)
+
+    result = runner.invoke(
+        app,
+        [
+            "tools",
+            "create",
+            "--name",
+            "mcp-tool",
+            "--tool-type",
+            "CodeEnv",
+            "--enable-mcp",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert isinstance(_FakeToolsClient.last_request, tools_types.CreateToolRequest)
+    assert _FakeToolsClient.last_request.enable_mcp is True
+
+
+def test_tools_update_can_explicitly_enable_or_disable_mcp(monkeypatch) -> None:
+    from agentkit.toolkit.cli import cli_tools
+    from agentkit.toolkit.cli.cli import app
+
+    _FakeToolsClient.last_request = None
+    monkeypatch.setattr(cli_tools, "AgentkitToolsClient", _FakeToolsClient)
+
+    enable_result = runner.invoke(
+        app,
+        ["tools", "update", "--tool-id", "tool-123", "--enable-mcp"],
+    )
+    assert enable_result.exit_code == 0
+    assert _FakeToolsClient.last_request.enable_mcp is True
+
+    disable_result = runner.invoke(
+        app,
+        ["tools", "update", "--tool-id", "tool-123", "--disable-mcp"],
+    )
+    assert disable_result.exit_code == 0
+    assert _FakeToolsClient.last_request.enable_mcp is False
+
+
+def test_tools_update_omits_mcp_setting_when_flag_is_absent(monkeypatch) -> None:
+    from agentkit.toolkit.cli import cli_tools
+    from agentkit.toolkit.cli.cli import app
+
+    _FakeToolsClient.last_request = None
+    monkeypatch.setattr(cli_tools, "AgentkitToolsClient", _FakeToolsClient)
+
+    result = runner.invoke(
+        app,
+        ["tools", "update", "--tool-id", "tool-123", "--description", "updated"],
+    )
+
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_request.enable_mcp is None
 
 
 def test_tools_update_sends_iam_role_tos_mount_without_credentials(

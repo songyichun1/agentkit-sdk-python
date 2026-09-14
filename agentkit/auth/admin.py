@@ -47,9 +47,15 @@ POLICY_NAME = "agentkit_cli_sandbox_access"
 SANDBOX_ACCESS_POLICY = "AgentKitSandboxAccess"
 WELL_KNOWN_KEY = ".well-known/agentkit-cli"
 ROLE_ACTIONS = (
-    "agentkit:CreateSession", "agentkit:GetSession", "agentkit:DeleteSession",
-    "agentkit:GetSessionLogs", "agentkit:SetSessionTtl",
-    "agentkit:ListTools", "agentkit:GetTool",
+    "agentkit:CreateSession",
+    "agentkit:GetSession",
+    "agentkit:DeleteSession",
+    "agentkit:PauseSession",
+    "agentkit:ResumeSession",
+    "agentkit:GetSessionLogs",
+    "agentkit:SetSessionTtl",
+    "agentkit:ListTools",
+    "agentkit:GetTool",
 )
 
 
